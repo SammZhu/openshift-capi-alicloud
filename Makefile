@@ -18,7 +18,7 @@ CGO_ENABLED ?= 0
 # Prefer podman, fall back to docker
 ENGINE := $(shell command -v /opt/podman/bin/podman 2>/dev/null || command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 
-CONTROLLER_GEN_VERSION := v0.16.1
+CONTROLLER_GEN_VERSION := v0.21.0
 CONTROLLER_GEN         := $(shell pwd)/bin/controller-gen
 
 # ── Default target ─────────────────────────────────────────────────────────────
