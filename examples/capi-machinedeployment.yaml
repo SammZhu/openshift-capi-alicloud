@@ -1,0 +1,297 @@
+# CAPA MachineDeployment Example
+# ================================
+# Deploys worker nodes onto an existing OpenShift cluster installed via
+# Assisted Installer or Agent-based Installer on Alibaba Cloud.
+#
+# This file contains two complete deployment scenarios:
+#   SCENARIO A  (single-AZ)  — simple setup, all workers in one zone.
+#   SCENARIO B  (multi-AZ)   — HA setup using CAPI FailureDomains across 3 zones.
+# Apply ONE scenario only. The MachineHealthCheck at the bottom applies to both.
+#
+# Prerequisites:
+#   - OpenShift cluster installed and kubeconfig available
+#   - CAPA CRDs applied:  oc apply -f custom_manifests/02-capa-crds.yaml
+#   - CAPA controller running: oc apply -f custom_manifests/02-capa-controller.yaml
+#   - CCM running and nodes Ready
+#
+# Usage:
+#   1. Fill in all FILL_IN placeholders.
+#   2. oc apply -f capi-machinedeployment.yaml
+#   3. Watch: oc get alibabacloudmachines -A
+#             oc get machines -A
+#
+# Variables to replace:
+#   CLUSTER_NAME      - matches your OpenShift cluster name (oc get infrastructure cluster -o jsonpath='{.status.infrastructureName}')
+#   NAMESPACE         - namespace for CAPI objects (recommend: openshift-cluster-api)
+#   REGION_ID         - e.g. cn-hangzhou
+#   ZONE_ID           - e.g. cn-hangzhou-k  (single-AZ scenario)
+#   ZONE_ID_A/B/C     - e.g. cn-hangzhou-h/i/k  (multi-AZ scenario)
+#   VPC_ID            - output VpcId from ROS stack
+#   VSWITCH_ID        - output VSwitchId from ROS stack (single-AZ)
+#   VSWITCH_ID_A/B/C  - VSwitchId per zone from ROS stack (multi-AZ)
+#   WORKER_SG_ID      - WorkerSecurityGroup ID from ROS stack
+#   RAM_ROLE_NAME     - NodeRamRole name from ROS stack (e.g. <cluster>-node-ram-role)
+#   IMAGE_ID          - RHCOS image ID in Alibaba Cloud (custom image imported from ISO)
+#   INSTANCE_TYPE     - e.g. ecs.c6.4xlarge (16 vCPU, 32 GiB — adjust for workload)
+#   API_SERVER_IP     - ApiSLBIp output from ROS stack (internal SLB IP, port 6443)
+#   RESOURCE_GROUP_ID - (optional) Alibaba Cloud resource group ID; leave empty to omit
+
+##############################################################################
+# SCENARIO A — Single Availability Zone (simple setup)
+##############################################################################
+
+---
+# ── AlibabaCloudCluster (single-AZ) ──────────────────────────────────────────
+# Represents the cluster-level infrastructure. Points the CAPA controller at
+# the existing SLB created by the ROS stack so it does NOT recreate it.
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AlibabaCloudCluster
+metadata:
+  name: CLUSTER_NAME
+  namespace: NAMESPACE
+spec:
+  region: REGION_ID
+  # Pre-existing VPC created by ROS template — controller will adopt it.
+  vpcID: VPC_ID
+  # Pre-existing SLB endpoint — controller will NOT create a new one.
+  controlPlaneEndpoint:
+    host: API_SERVER_IP
+    port: 6443
+  resourceGroupID: RESOURCE_GROUP_ID   # optional; remove if unused
+
+---
+# ── CAPI Cluster (links core Cluster to AlibabaCloudCluster) ─────────────────
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: CLUSTER_NAME
+  namespace: NAMESPACE
+spec:
+  paused: false
+  controlPlaneEndpoint:
+    host: API_SERVER_IP
+    port: 6443
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: AlibabaCloudCluster
+    name: CLUSTER_NAME
+    namespace: NAMESPACE
+
+---
+# ── AlibabaCloudMachineTemplate (single-AZ worker blueprint) ─────────────────
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AlibabaCloudMachineTemplate
+metadata:
+  name: CLUSTER_NAME-worker
+  namespace: NAMESPACE
+spec:
+  template:
+    spec:
+      instanceType: INSTANCE_TYPE       # e.g. ecs.c6.4xlarge
+      imageID: IMAGE_ID                 # RHCOS custom image ID
+      regionID: REGION_ID
+      zoneID: ZONE_ID                   # explicit single zone
+      vSwitchID: VSWITCH_ID             # explicit vswitch for that zone
+      securityGroupIDs:
+        - WORKER_SG_ID
+      ramRoleName: RAM_ROLE_NAME
+      systemDisk:
+        category: cloud_essd            # cloud_essd recommended for performance
+        size: 120                       # GiB; minimum 120 for OpenShift worker
+      tags:
+        - key: kubernetes.io/cluster/CLUSTER_NAME
+          value: owned
+        - key: node-role
+          value: worker
+      # userDataSecret points to a Secret with ignition config for worker nodes.
+      # Generate with: openshift-install agent create single-node-ignition-config
+      # Then: oc create secret generic worker-user-data \
+      #         --from-file=value=worker.ign -n NAMESPACE
+      userDataSecret:
+        name: worker-user-data
+
+---
+# ── MachineDeployment (single-AZ worker pool) ─────────────────────────────────
+# Scale with: oc scale machinedeployment CLUSTER_NAME-workers --replicas=N -n NAMESPACE
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: CLUSTER_NAME-workers
+  namespace: NAMESPACE
+  labels:
+    cluster.x-k8s.io/cluster-name: CLUSTER_NAME
+spec:
+  clusterName: CLUSTER_NAME
+  replicas: 2                           # adjust as needed
+  selector:
+    matchLabels:
+      cluster.x-k8s.io/cluster-name: CLUSTER_NAME
+      cluster.x-k8s.io/deployment-name: CLUSTER_NAME-workers
+  template:
+    metadata:
+      labels:
+        cluster.x-k8s.io/cluster-name: CLUSTER_NAME
+        cluster.x-k8s.io/deployment-name: CLUSTER_NAME-workers
+    spec:
+      clusterName: CLUSTER_NAME
+      version: v1.29.0                  # match your OpenShift k8s version
+      bootstrap:
+        dataSecretName: worker-user-data
+      infrastructureRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: AlibabaCloudMachineTemplate
+        name: CLUSTER_NAME-worker
+        namespace: NAMESPACE
+
+##############################################################################
+# SCENARIO B — Multi Availability Zone (HA — replaces Scenario A above)
+#
+# How it works:
+#   1. AlibabaCloudCluster.spec.failureDomains lists the zones + vswitches.
+#   2. CAPA controller publishes them to AlibabaCloudCluster.status.failureDomains.
+#   3. CAPI core reads the status and sets Machine.spec.failureDomain for each
+#      Machine in round-robin order across the listed zones.
+#   4. CAPA machine controller reads Machine.spec.failureDomain, looks up the
+#      matching entry, and populates ZoneID + VSwitchID before calling ECS.
+#
+# Leave zoneID/vSwitchID EMPTY in the MachineTemplate — the failure domain
+# resolution fills them in automatically.
+##############################################################################
+
+---
+# ── AlibabaCloudCluster (multi-AZ) ───────────────────────────────────────────
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AlibabaCloudCluster
+metadata:
+  name: CLUSTER_NAME
+  namespace: NAMESPACE
+spec:
+  region: REGION_ID
+  vpcID: VPC_ID
+  controlPlaneEndpoint:
+    host: API_SERVER_IP
+    port: 6443
+  resourceGroupID: RESOURCE_GROUP_ID   # optional
+  # failureDomains enables automatic multi-AZ spreading by CAPI.
+  # Add or remove zones as needed; CAPI assigns machines round-robin.
+  failureDomains:
+    - zoneID: ZONE_ID_A                 # e.g. cn-hangzhou-h
+      vSwitchID: VSWITCH_ID_A
+    - zoneID: ZONE_ID_B                 # e.g. cn-hangzhou-i
+      vSwitchID: VSWITCH_ID_B
+    - zoneID: ZONE_ID_C                 # e.g. cn-hangzhou-k
+      vSwitchID: VSWITCH_ID_C
+
+---
+# ── CAPI Cluster (multi-AZ) ──────────────────────────────────────────────────
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: CLUSTER_NAME
+  namespace: NAMESPACE
+spec:
+  paused: false
+  controlPlaneEndpoint:
+    host: API_SERVER_IP
+    port: 6443
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+    kind: AlibabaCloudCluster
+    name: CLUSTER_NAME
+    namespace: NAMESPACE
+
+---
+# ── AlibabaCloudMachineTemplate (multi-AZ worker blueprint) ──────────────────
+# NOTE: zoneID and vSwitchID are intentionally left empty — the CAPA controller
+# fills them in from the failure domain selected by CAPI for each Machine.
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AlibabaCloudMachineTemplate
+metadata:
+  name: CLUSTER_NAME-worker-ha
+  namespace: NAMESPACE
+spec:
+  template:
+    spec:
+      instanceType: INSTANCE_TYPE
+      imageID: IMAGE_ID
+      regionID: REGION_ID
+      # zoneID: ""    ← omit; resolved from Machine.spec.failureDomain
+      # vSwitchID: "" ← omit; resolved from AlibabaCloudCluster.status.failureDomains
+      securityGroupIDs:
+        - WORKER_SG_ID
+      ramRoleName: RAM_ROLE_NAME
+      systemDisk:
+        category: cloud_essd
+        size: 120
+      tags:
+        - key: kubernetes.io/cluster/CLUSTER_NAME
+          value: owned
+        - key: node-role
+          value: worker
+      userDataSecret:
+        name: worker-user-data
+
+---
+# ── MachineDeployment (multi-AZ worker pool) ──────────────────────────────────
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: CLUSTER_NAME-workers-ha
+  namespace: NAMESPACE
+  labels:
+    cluster.x-k8s.io/cluster-name: CLUSTER_NAME
+spec:
+  clusterName: CLUSTER_NAME
+  replicas: 3                           # CAPI spreads across 3 zones (1 per zone)
+  selector:
+    matchLabels:
+      cluster.x-k8s.io/cluster-name: CLUSTER_NAME
+      cluster.x-k8s.io/deployment-name: CLUSTER_NAME-workers-ha
+  template:
+    metadata:
+      labels:
+        cluster.x-k8s.io/cluster-name: CLUSTER_NAME
+        cluster.x-k8s.io/deployment-name: CLUSTER_NAME-workers-ha
+    spec:
+      clusterName: CLUSTER_NAME
+      version: v1.29.0
+      bootstrap:
+        dataSecretName: worker-user-data
+      infrastructureRef:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: AlibabaCloudMachineTemplate
+        name: CLUSTER_NAME-worker-ha
+        namespace: NAMESPACE
+
+##############################################################################
+# MachineHealthCheck — applies to both scenarios
+# Automatically replaces unhealthy nodes after 5 minutes.
+# Adjust timeouts to match your cluster's provisioning speed.
+##############################################################################
+
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineHealthCheck
+metadata:
+  name: CLUSTER_NAME-worker-health
+  namespace: NAMESPACE
+spec:
+  clusterName: CLUSTER_NAME
+  # Targets all worker MachineDeployments in this cluster.
+  selector:
+    matchLabels:
+      cluster.x-k8s.io/cluster-name: CLUSTER_NAME
+  # A node is considered unhealthy when it has been in one of these conditions
+  # for longer than the specified timeout.
+  unhealthyConditions:
+    - type: Ready
+      status: "False"
+      timeout: 5m0s
+    - type: Ready
+      status: Unknown
+      timeout: 5m0s
+  # Maximum number (or percentage) of machines that can be remediated at once.
+  # "33%" avoids simultaneous replacement of all nodes in a 3-zone deployment.
+  maxUnhealthy: 33%
+  # Grace period before health checks begin — gives new nodes time to join.
+  nodeStartupTimeout: 10m0s

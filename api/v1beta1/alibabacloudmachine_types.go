@@ -1,0 +1,149 @@
+package v1beta1
+
+import (
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+)
+
+const (
+	// MachineFinalizer allows AlibabaCloudMachineReconciler to clean up ECS instances
+	// before removing the AlibabaCloudMachine object from the API server.
+	MachineFinalizer = "alibabacloudmachine.infrastructure.cluster.x-k8s.io"
+)
+
+// AlibabaCloudMachineSpec defines the desired state of AlibabaCloudMachine.
+type AlibabaCloudMachineSpec struct {
+	// ProviderID is the unique identifier as specified by the cloud provider.
+	// Populated by the controller after ECS instance creation.
+	// +optional
+	ProviderID *string `json:"providerID,omitempty"`
+
+	// InstanceType is the ECS instance type (e.g. ecs.c6.large).
+	// +kubebuilder:validation:Required
+	InstanceType string `json:"instanceType"`
+
+	// ImageID is the ID of the ECS image to use for the instance.
+	// +kubebuilder:validation:Required
+	ImageID string `json:"imageID"`
+
+	// RegionID is the Alibaba Cloud region. Defaults to the cluster region.
+	// +optional
+	RegionID string `json:"regionID,omitempty"`
+
+	// ZoneID is the availability zone within the region.
+	// +optional
+	ZoneID string `json:"zoneID,omitempty"`
+
+	// SecurityGroupIDs is the list of security group IDs to associate with the instance.
+	// +optional
+	SecurityGroupIDs []string `json:"securityGroupIDs,omitempty"`
+
+	// VSwitchID is the ID of the vSwitch to use for the primary network interface.
+	// +optional
+	VSwitchID string `json:"vSwitchID,omitempty"`
+
+	// SystemDisk describes the system disk configuration.
+	// +optional
+	SystemDisk *SystemDisk `json:"systemDisk,omitempty"`
+
+	// DataDisks describes additional data disks.
+	// +optional
+	DataDisks []DataDisk `json:"dataDisks,omitempty"`
+
+	// RAMRoleName is the RAM role name to attach to the ECS instance.
+	// +optional
+	RAMRoleName string `json:"ramRoleName,omitempty"`
+
+	// Tags are additional tags to apply to the ECS instance.
+	// +optional
+	Tags []Tag `json:"tags,omitempty"`
+
+	// UserDataSecret refers to a Secret containing the base64-encoded user data
+	// script to execute on instance startup.
+	// +optional
+	UserDataSecret *corev1.LocalObjectReference `json:"userDataSecret,omitempty"`
+
+	// CredentialsSecret refers to a Secret containing Alibaba Cloud credentials.
+	// If not specified, the controller uses the ambient credentials from the
+	// cluster credential infrastructure.
+	// +optional
+	CredentialsSecret *corev1.LocalObjectReference `json:"credentialsSecret,omitempty"`
+}
+
+// AlibabaCloudMachineStatus defines the observed state of AlibabaCloudMachine.
+type AlibabaCloudMachineStatus struct {
+	// Ready indicates that the machine is ready to receive workloads.
+	// +kubebuilder:default=false
+	Ready bool `json:"ready"`
+
+	// InstanceID is the ECS instance ID of the provisioned machine.
+	// +optional
+	InstanceID *string `json:"instanceID,omitempty"`
+
+	// InstanceState reflects the current state of the ECS instance.
+	// +optional
+	InstanceState *InstanceState `json:"instanceState,omitempty"`
+
+	// Addresses contains the associated addresses for the machine.
+	// +optional
+	Addresses []clusterv1.MachineAddress `json:"addresses,omitempty"`
+
+	// Conditions defines current service state of the AlibabaCloudMachine.
+	// +optional
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+	// FailureReason will be set in the event that there is a terminal problem
+	// reconciling the Machine and will contain a succinct value suitable for
+	// machine interpretation.
+	// +optional
+	FailureReason *string `json:"failureReason,omitempty"`
+
+	// FailureMessage will be set in the event that there is a terminal problem
+	// reconciling the Machine and will contain a more verbose string suitable
+	// for logging and human consumption.
+	// +optional
+	FailureMessage *string `json:"failureMessage,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:path=alibabacloudmachines,scope=Namespaced,categories=cluster-api
+// +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".metadata.labels['cluster\\.x-k8s\\.io/cluster-name']"
+// +kubebuilder:printcolumn:name="State",type="string",JSONPath=".status.instanceState"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.ready"
+// +kubebuilder:printcolumn:name="InstanceID",type="string",JSONPath=".status.instanceID"
+// +kubebuilder:printcolumn:name="Machine",type="string",JSONPath=".metadata.ownerReferences[?(@.kind==\"Machine\")].name"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+
+// AlibabaCloudMachine is the Schema for the alibabacloudmachines API.
+type AlibabaCloudMachine struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   AlibabaCloudMachineSpec   `json:"spec,omitempty"`
+	Status AlibabaCloudMachineStatus `json:"status,omitempty"`
+}
+
+// GetConditions returns the conditions of the AlibabaCloudMachine.
+func (m *AlibabaCloudMachine) GetConditions() []metav1.Condition {
+	return m.Status.Conditions
+}
+
+// SetConditions sets the conditions of the AlibabaCloudMachine.
+func (m *AlibabaCloudMachine) SetConditions(conditions []metav1.Condition) {
+	m.Status.Conditions = conditions
+}
+
+// +kubebuilder:object:root=true
+
+// AlibabaCloudMachineList contains a list of AlibabaCloudMachine.
+type AlibabaCloudMachineList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []AlibabaCloudMachine `json:"items"`
+}
+
+func init() {
+	SchemeBuilder.Register(&AlibabaCloudMachine{}, &AlibabaCloudMachineList{})
+}
