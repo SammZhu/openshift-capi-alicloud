@@ -30,10 +30,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 
-	infrav1 "github.com/openshift/cluster-api-provider-alibaba/api/v1beta1"
-	infracontroller "github.com/openshift/cluster-api-provider-alibaba/internal/controller"
-	alibabaClient "github.com/openshift/cluster-api-provider-alibaba/pkg/client"
-	"github.com/openshift/cluster-api-provider-alibaba/pkg/version"
+	infrav1 "github.com/SammZhu/openshift-capi-alicloud/api/v1beta1"
+	infracontroller "github.com/SammZhu/openshift-capi-alicloud/internal/controller"
+	alibabaClient "github.com/SammZhu/openshift-capi-alicloud/pkg/client"
+	"github.com/SammZhu/openshift-capi-alicloud/pkg/version"
 )
 
 var (

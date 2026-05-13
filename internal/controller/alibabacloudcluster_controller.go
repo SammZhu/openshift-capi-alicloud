@@ -20,8 +20,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	infrav1 "github.com/openshift/cluster-api-provider-alibaba/api/v1beta1"
-	alibabaClient "github.com/openshift/cluster-api-provider-alibaba/pkg/client"
+	infrav1 "github.com/SammZhu/openshift-capi-alicloud/api/v1beta1"
+	alibabaClient "github.com/SammZhu/openshift-capi-alicloud/pkg/client"
 )
 
 // AlibabaCloudClusterReconciler reconciles an AlibabaCloudCluster object.

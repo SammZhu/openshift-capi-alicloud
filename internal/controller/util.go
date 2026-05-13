@@ -9,7 +9,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	infrav1 "github.com/openshift/cluster-api-provider-alibaba/api/v1beta1"
+	infrav1 "github.com/SammZhu/openshift-capi-alicloud/api/v1beta1"
 )
 
 const requeueAfter = 30 * time.Second

@@ -1,145 +1,91 @@
-# Copyright 2021 The Kubernetes Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# Makefile for openshift-capi-alicloud
+# Cluster API Infrastructure Provider for Alibaba Cloud
 
-GO111MODULE = on
-export GO111MODULE
-GOFLAGS ?= -mod=vendor
-export GOFLAGS
-GOPROXY ?=
-export GOPROXY
+# ── Variables ─────────────────────────────────────────────────────────────────
+REGISTRY    ?= quay.io/samzhu
+IMAGE_NAME  ?= openshift-capi-alicloud
+IMAGE_TAG   ?= latest
+IMAGE       := $(REGISTRY)/$(IMAGE_NAME):$(IMAGE_TAG)
 
-DBG ?= 0
+MODULE      := github.com/SammZhu/openshift-capi-alicloud
+VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+LD_FLAGS    := -X $(MODULE)/pkg/version.Raw=$(VERSION) -extldflags "-static"
 
-ifeq ($(DBG),1)
-GOGCFLAGS ?= -gcflags=all="-N -l"
-endif
+GOARCH      ?= $(shell go env GOARCH)
+GOOS        ?= $(shell go env GOOS)
+CGO_ENABLED ?= 0
 
-GOARCH  ?= $(shell go env GOARCH)
-GOOS    ?= $(shell go env GOOS)
+# Prefer podman, fall back to docker
+ENGINE := $(shell command -v /opt/podman/bin/podman 2>/dev/null || command -v podman 2>/dev/null || command -v docker 2>/dev/null)
 
-VERSION     ?= $(shell git describe --tags --abbrev=7)
-REPO_PATH   ?= github.com/openshift/cluster-api-provider-alibaba
-LD_FLAGS    ?= -X $(REPO_PATH)/pkg/version.Raw=$(VERSION) $(shell hack/version.sh)  -extldflags "-static"
-MUTABLE_TAG ?= latest
-IMAGE        = origin-alibabacloud-machine-controllers
-BUILD_IMAGE ?= registry.ci.openshift.org/openshift/release:golang-1.18
+CONTROLLER_GEN_VERSION := v0.16.1
+CONTROLLER_GEN         := $(shell pwd)/bin/controller-gen
 
-
-# race tests need CGO_ENABLED, everything else should have it disabled
-CGO_ENABLED = 0
-unit : CGO_ENABLED = 1
-
+# ── Default target ─────────────────────────────────────────────────────────────
 .PHONY: all
-all: generate build images check
+all: fmt vet build test ## Run fmt, vet, build, and test
 
-NO_DOCKER ?= 0
-
-ifeq ($(shell command -v podman > /dev/null 2>&1 ; echo $$? ), 0)
-	ENGINE=podman
-else ifeq ($(shell command -v docker > /dev/null 2>&1 ; echo $$? ), 0)
-	ENGINE=docker
-else
-	NO_DOCKER=1
-endif
-
-USE_DOCKER ?= 0
-ifeq ($(USE_DOCKER), 1)
-	ENGINE=docker
-endif
-
-ifeq ($(NO_DOCKER), 1)
-  DOCKER_CMD =
-  IMAGE_BUILD_CMD = imagebuilder
-else
-  DOCKER_CMD = $(ENGINE) run --rm -e CGO_ENABLED=$(CGO_ENABLED) -e GOARCH=$(GOARCH) -e GOOS=$(GOOS) -v "$(PWD)":/go/src/github.com/openshift/cluster-api-provider-alibaba:Z -w /go/src/github.com/openshift/cluster-api-provider-alibaba ${BUILD_IMAGE}
-  IMAGE_BUILD_CMD = $(ENGINE) build
-endif
-
-.PHONY: vendor
-vendor:
-	$(DOCKER_CMD) hack/go-mod.sh
-.PHONY: generate
-generate: gogen goimports
-
-gogen:
-	$(DOCKER_CMD) go generate ./pkg/... ./cmd/...
-
-.PHONY: test
-test: ## Run tests
-	@echo -e "\033[32mTesting...\033[0m"
-	$(DOCKER_CMD) hack/ci-test.sh
-
-bin:
-	@mkdir $@
-
-
-
-##@ Development
-CONTROLLER_GEN = $(shell pwd)/bin/controller-gen
-controller-gen: ## Download controller-gen locally if necessary.
-	$(call go-get-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen@v0.7.0)
-
-
-deepcopy: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt",year=2021 paths="./pkg/apis/alibabacloudprovider/v1/."
-
-
+# ── Build ──────────────────────────────────────────────────────────────────────
 .PHONY: build
-build: ## build binaries
-	$(DOCKER_CMD) CGO_ENABLED=0 go build $(GOGCFLAGS) -o "bin/machine-controller-manager" \
-               -ldflags "$(LD_FLAGS)" "$(REPO_PATH)/cmd/manager"
+build: bin/manager-linux-amd64 ## Cross-compile manager binary for Linux amd64
 
-.PHONY: images
-images: ## Create images
-ifeq ($(NO_DOCKER), 1)
-	./hack/imagebuilder.sh
-endif
-	$(IMAGE_BUILD_CMD) -t "$(IMAGE):$(VERSION)" -t "$(IMAGE):$(MUTABLE_TAG)" ./
+bin/manager-linux-amd64: $(shell find . -name '*.go' -not -path './vendor/*')
+	@mkdir -p bin
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+		-ldflags "$(LD_FLAGS)" \
+		-o bin/manager-linux-amd64 \
+		./cmd/main.go
+	@echo "Built: bin/manager-linux-amd64 ($(shell ls -lh bin/manager-linux-amd64 | awk '{print $$5}'))"
+
+# ── Container image ────────────────────────────────────────────────────────────
+.PHONY: image
+image: build ## Build container image
+	$(ENGINE) build -t $(IMAGE) .
+	@echo "Image: $(IMAGE)"
 
 .PHONY: push
-push:
-	$(ENGINE) push "$(IMAGE):$(VERSION)"
-	$(ENGINE) push "$(IMAGE):$(MUTABLE_TAG)"
+push: image ## Build and push container image
+	$(ENGINE) push $(IMAGE)
+	@echo "Pushed: $(IMAGE)"
 
-.PHONY: check
-check: fmt vet lint test # Check your code
+# ── Code generation ────────────────────────────────────────────────────────────
+.PHONY: generate
+generate: controller-gen ## Regenerate DeepCopy and CRD manifests
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
+	$(CONTROLLER_GEN) crd paths="./api/..." output:crd:dir=config/crd/bases
+	@echo "Generated DeepCopy and CRD manifests"
 
-.PHONY: unit
-unit: # Run unit test
-	$(DOCKER_CMD) go test -race -cover ./cmd/... ./pkg/...
+.PHONY: controller-gen
+controller-gen: ## Download controller-gen if not present
+	@if ! [ -x $(CONTROLLER_GEN) ]; then \
+		echo "Downloading controller-gen $(CONTROLLER_GEN_VERSION)..."; \
+		GOBIN=$(shell pwd)/bin go install sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION); \
+	fi
 
-.PHONY: test-e2e
-test-e2e: ## Run e2e tests
-	 hack/e2e.sh
+# ── Testing ────────────────────────────────────────────────────────────────────
+.PHONY: test
+test: ## Run unit tests
+	go test -v -count=1 ./...
 
-.PHONY: lint
-lint: ## Go lint your code
-	$(DOCKER_CMD) hack/go-lint.sh -min_confidence 0.3 $$(go list -f '{{ .ImportPath }}' ./... | grep -v -e 'github.com/openshift/cluster-api-provider-alibaba/test' -e 'github.com/openshift/cluster-api-provider-alibaba/pkg/cloud/alibabacloud/client/mock')
+.PHONY: test-race
+test-race: ## Run unit tests with race detector
+	CGO_ENABLED=1 go test -race -count=1 ./...
 
+# ── Code quality ───────────────────────────────────────────────────────────────
 .PHONY: fmt
-fmt: ## Go fmt your code
-	$(DOCKER_CMD) hack/go-fmt.sh .
-
-.PHONY: goimports
-goimports:
-	$(DOCKER_CMD) hack/goimports.sh .
-	hack/verify-diff.sh
+fmt: ## Run go fmt
+	go fmt ./...
 
 .PHONY: vet
-vet: ## Apply go vet to all go files
-	$(DOCKER_CMD) hack/go-vet.sh ./...
+vet: ## Run go vet
+	go vet ./...
+
+# ── Utilities ──────────────────────────────────────────────────────────────────
+.PHONY: clean
+clean: ## Remove build artifacts
+	rm -rf bin/
 
 .PHONY: help
-help:
-	@grep -E '^[a-zA-Z/0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
+help: ## Show this help
+	@grep -E '^[a-zA-Z/_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+		| awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'

@@ -22,8 +22,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	infrav1 "github.com/openshift/cluster-api-provider-alibaba/api/v1beta1"
-	alibabaClient "github.com/openshift/cluster-api-provider-alibaba/pkg/client"
+	infrav1 "github.com/SammZhu/openshift-capi-alicloud/api/v1beta1"
+	alibabaClient "github.com/SammZhu/openshift-capi-alicloud/pkg/client"
 )
 
 // AlibabaCloudMachineReconciler reconciles an AlibabaCloudMachine object.
@@ -225,8 +225,9 @@ func regionFromMachine(m *infrav1.AlibabaCloudMachine) (string, error) {
 	return "", fmt.Errorf("Spec.RegionID is empty and ProviderID is unset or invalid")
 }
 
-// findOrCreateInstance looks up an existing ECS instance by ProviderID or creates a new one.
-// Returns nil if the instance is not yet Running (caller should requeue).
+// findOrCreateInstance looks up an existing ECS instance by InstanceID or creates a new one.
+// Returns nil, nil when the instance exists but is not yet Running — the caller must requeue.
+// Returns a non-nil *instanceInfo only when the instance is Running and ready to be marked Ready.
 func (r *AlibabaCloudMachineReconciler) findOrCreateInstance(
 	ctx context.Context,
 	alibabaSDKClient alibabaClient.Client,
@@ -237,21 +238,39 @@ func (r *AlibabaCloudMachineReconciler) findOrCreateInstance(
 	log := ctrl.LoggerFrom(ctx)
 
 	if alibabaCloudMachine.Status.InstanceID != nil {
-		info, err := r.describeInstance(ctx, alibabaSDKClient, *alibabaCloudMachine.Status.InstanceID)
+		instanceID := *alibabaCloudMachine.Status.InstanceID
+		info, err := r.describeInstance(ctx, alibabaSDKClient, instanceID)
 		if err != nil {
 			return nil, err
 		}
-		if info != nil {
-			return r.syncInstanceStatus(alibabaCloudMachine, info), nil
+		if info == nil {
+			// Instance disappeared — treat as terminal error so CAPI can remediate.
+			return nil, fmt.Errorf("ECS instance %s no longer exists", instanceID)
+		}
+
+		// Always sync addresses and state into status regardless of current state.
+		r.syncInstanceStatus(alibabaCloudMachine, info)
+
+		switch info.State {
+		case infrav1.InstanceStateRunning:
+			log.Info("ECS instance is Running", "instanceID", instanceID)
+			return info, nil
+		case infrav1.InstanceStateDeleted, infrav1.InstanceStateStopped:
+			return nil, fmt.Errorf("ECS instance %s is in terminal state %q", instanceID, info.State)
+		default:
+			// Pending / Starting / Stopping — keep waiting.
+			log.Info("ECS instance not yet Running, requeueing", "instanceID", instanceID, "state", info.State)
+			return nil, nil
 		}
 	}
 
 	log.Info("Creating ECS instance", "machine", machine.Name)
-	info, err := r.createInstance(ctx, alibabaSDKClient, machine, alibabaCluster, alibabaCloudMachine)
-	if err != nil {
+	if err := r.createInstance(ctx, alibabaSDKClient, machine, alibabaCluster, alibabaCloudMachine); err != nil {
 		return nil, err
 	}
-	return info, nil
+	// Instance created but not yet Running — requeue to poll status.
+	log.Info("ECS instance created, waiting for Running state", "instanceID", *alibabaCloudMachine.Status.InstanceID)
+	return nil, nil
 }
 
 // instanceInfo holds normalised data about an ECS instance.
@@ -284,10 +303,10 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 	machine *clusterv1.Machine,
 	alibabaCluster *infrav1.AlibabaCloudCluster,
 	alibabaCloudMachine *infrav1.AlibabaCloudMachine,
-) (*instanceInfo, error) {
+) error {
 	userData, err := r.getUserData(ctx, alibabaCloudMachine)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	diskCategory := "cloud_efficiency"
@@ -312,7 +331,7 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 		ResourceGroupID:    alibabaCluster.Spec.ResourceGroupID,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create ECS instance: %w", err)
+		return fmt.Errorf("failed to create ECS instance: %w", err)
 	}
 
 	instanceID := resp.InstanceID
@@ -320,8 +339,7 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 	alibabaCloudMachine.Spec.ProviderID = &providerID
 	alibabaCloudMachine.Status.InstanceID = &instanceID
 	alibabaCloudMachine.Status.InstanceState = &infrav1.InstanceStatePending
-
-	return &instanceInfo{InstanceID: instanceID, State: infrav1.InstanceStatePending}, nil
+	return nil
 }
 
 func (r *AlibabaCloudMachineReconciler) deleteInstance(ctx context.Context, c alibabaClient.Client, alibabaCloudMachine *infrav1.AlibabaCloudMachine) error {

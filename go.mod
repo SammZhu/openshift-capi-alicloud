@@ -1,4 +1,4 @@
-module github.com/openshift/cluster-api-provider-alibaba
+module github.com/SammZhu/openshift-capi-alicloud
 
 go 1.26.0
 
