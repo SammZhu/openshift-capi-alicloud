@@ -66,3 +66,53 @@ jobs:
           name: manager-linux-amd64
           path: bin/manager-linux-amd64
           retention-days: 7
+
+  container-build:
+    name: Build container image
+    runs-on: ubuntu-latest
+    needs: cross-compile
+    # Only push to registry on main branch; PRs just verify the image builds.
+    # Set REGISTRY_USER / REGISTRY_PASSWORD secrets in repo settings to enable push.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary for container
+        run: |
+          mkdir -p bin
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+            -ldflags "-extldflags '-static'" \
+            -o bin/manager-linux-amd64 \
+            ./cmd/main.go
+
+      - name: Set image tag
+        id: tag
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          echo "tag=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "image=quay.io/samzhu/openshift-capi-alicloud:${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build container image
+        run: |
+          docker build \
+            -t ${{ steps.tag.outputs.image }} \
+            -t quay.io/samzhu/openshift-capi-alicloud:latest \
+            -f Dockerfile \
+            .
+
+      - name: Push container image
+        if: ${{ secrets.REGISTRY_USER != '' }}
+        env:
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          echo "$REGISTRY_PASSWORD" | docker login quay.io -u "$REGISTRY_USER" --password-stdin
+          docker push ${{ steps.tag.outputs.image }}
+          docker push quay.io/samzhu/openshift-capi-alicloud:latest

@@ -1,344 +1,223 @@
-# OpenShift cluster-api-provider-alibaba
+# openshift-capi-alicloud
 
-This repository hosts an implementation of a provider for AlibabaCloud for the
-OpenShift [machine-api](https://github.com/openshift/cluster-api).
+Cluster API Infrastructure Provider for Alibaba Cloud — designed for running
+**OpenShift** on Alibaba Cloud ECS using the
+[Cluster API (CAPI)](https://cluster-api.sigs.k8s.io/) framework.
 
-This provider runs as a machine-controller deployed by the
-[machine-api-operator](https://github.com/openshift/machine-api-operator)
+## Overview
 
-### How to build the images in the RH infrastructure
-The Dockerfiles use `as builder` in the `FROM` instruction which is not currently supported
-by the RH's docker fork (see [https://github.com/kubernetes-sigs/kubebuilder/issues/268](https://github.com/kubernetes-sigs/kubebuilder/issues/268)).
-One needs to run the `imagebuilder` command instead of the `docker build`.
+This provider implements the CAPI Infrastructure contract for Alibaba Cloud:
 
-Note: this info is RH only, it needs to be backported every time the `README.md` is synced with the upstream one.
+| Resource | API | Status |
+|---|---|---|
+| `AlibabaCloudCluster` | `infrastructure.cluster.x-k8s.io/v1beta1` | External Platform mode (pre-created VPC/SLB) |
+| `AlibabaCloudMachine` | `infrastructure.cluster.x-k8s.io/v1beta1` | Fully implemented |
+| `AlibabaCloudMachineTemplate` | `infrastructure.cluster.x-k8s.io/v1beta1` | Fully implemented |
+| `AlibabaCloudClusterTemplate` | `infrastructure.cluster.x-k8s.io/v1beta1` | Spec only (no controller) |
 
-## Deploy machine API plane with minikube
+### Design: External Platform mode
 
-1. **Install kvm**
+The primary use case is an OpenShift cluster installed via
+**Agent-based or Assisted Installer** into a VPC and SLB pre-created by the
+[ROS template](../alibaba-openshift/ros-templates/create-cluster.yaml) in the
+`alibaba-openshift` repository.
 
-   Depending on your virtualization manager you can choose a different [driver](https://github.com/kubernetes/minikube/blob/master/docs/drivers.md).
-   In order to install kvm, you can run (as described in the [drivers](https://github.com/kubernetes/minikube/blob/master/docs/drivers.md#kvm2-driver) documentation):
+In this mode:
+- VPC and SLB already exist — the Cluster controller adopts them (no creation/deletion)
+- CAPI manages **worker node lifecycle only**: scale out, scale in, health remediation
+- Multi-AZ worker spreading is handled via `spec.failureDomains` in `AlibabaCloudCluster`
 
-    ```sh
-    $ sudo yum install libvirt-daemon-kvm qemu-kvm libvirt-daemon-config-network
-    $ systemctl start libvirtd
-    $ sudo usermod -a -G libvirt $(whoami)
-    $ newgrp libvirt
-    ```
+Authentication uses the **ECS RAM Role** instance principal — no AK/SK required.
 
-   To install to kvm2 driver:
+## Architecture
 
-    ```sh
-    curl -Lo docker-machine-driver-kvm2 https://storage.googleapis.com/minikube/releases/latest/docker-machine-driver-kvm2 \
-    && chmod +x docker-machine-driver-kvm2 \
-    && sudo cp docker-machine-driver-kvm2 /usr/local/bin/ \
-    && rm docker-machine-driver-kvm2
-    ```
+```
+ROS template
+  └─ Creates: VPC, VSwitches, SLBs, Security Groups, RAM Roles
 
-2. **Deploying the cluster**
+OpenShift install (Agent-based)
+  └─ Installs control-plane nodes into the ROS-created infrastructure
 
-   To install minikube `v1.1.0`, you can run:
+CAPI (this provider)
+  └─ AlibabaCloudCluster ─ adopts existing VPC + SLB endpoint
+  └─ MachineDeployment   ─ manages worker ECS instances
+       └─ scale / health-check / multi-AZ spreading
+```
 
-    ```sg
-    $ curl -Lo minikube https://storage.googleapis.com/minikube/releases/v1.1.0/minikube-linux-amd64 && chmod +x minikube && sudo mv minikube /usr/local/bin/
-    ```
+## Components
 
-   To deploy the cluster:
+### Machine Controller (`AlibabaCloudMachine`)
 
-    ```
-    $ minikube start --vm-driver kvm2 --kubernetes-version v1.13.1 --v 5
-    $ eval $(minikube docker-env)
-    ```
-
-3. **Deploying machine API controllers**
-
-   For development purposes the AlibabaCloud machine controller itself will run out of the machine API stack.
-   Otherwise, docker images needs to be built, pushed into a docker registry and deployed within the stack.
-
-   To deploy the stack:
-    ```
-    kustomize build config | kubectl apply -f -
-    ```
-
-4. **Deploy secret with AlibabaCloud credentials**
-
-   AlibabaCloud actuator assumes existence of a secret file (references in machine object) with base64 encoded credentials:
-
-   ```yaml
-   apiVersion: v1
-   kind: Secret
-   metadata:
-     name: alibabacloud-credentials-secret
-     namespace: default
-   type: Opaque
-   data:
-     accessKeyID: FILLIN
-     accessKeySecret: FILLIN
-   ```
-
-   Save the above resource as **_secret.yaml_** and then apply it:
-   ```sh
-   kubectl apply -f secret.yaml
-   ```
-
-## Test locally built AlibabaCloud actuator
-
-1. **Tear down machine-controller**
-
-   Deployed machine API plane (`machine-api-controllers` deployment) is (among other
-   controllers) running `machine-controller`. In order to run locally built one,
-   simply edit `machine-api-controllers` deployment and remove `machine-controller` container from it.
-
-2. **Build and run AlibabaCloud actuator outside of the cluster**
-
-   ```sh
-   $ go build -o bin/machine-controller-manager github.com/openshift/cluster-api-provider-alibaba/cmd/manager
-   ```
-
-   ```sh
-   $ ./bin/machine-controller-manager --kubeconfig ~/.kube/config --logtostderr -v 5 -alsologtostderr
-   ```
-   If running in container with `podman`, or locally without `docker` installed, and encountering issues, see [hacking-guide](https://github.com/openshift/machine-api-operator/blob/master/docs/dev/hacking-guide.md#troubleshooting-make-targets).
-
-1. **Deploy k8s apiserver through machine manifest**:
-
-   To deploy user data secret with kubernetes apiserver initialization (under [config/master-user-data-secret.yaml](config/master-user-data-secret.yaml)):
-
-   ```sh
-   $ kubectl apply -f config/master-user-data-secret.yaml
-   ```
-
-   To deploy kubernetes master machine (under [config/master-machine.yaml](config/master-machine.yaml)):
-
-   ```sh
-   $ kubectl apply -f config/master-machine.yaml
-   ```
-
-1. **Join worker node through machine manifest**:
-
-   To deploy user data secret with kubernetes apiserver initialization (under [config/worker-user-data-secret.yaml](config/worker-user-data-secret.yaml)):
-
-   ```sh
-   $ kubectl apply -f config/worker-user-data-secret.yaml
-   ```
-
-   To deploy kubernetes worker machine (under [config/worker-machine.yaml](config/worker-machine.yaml)):
-
-   ```sh
-   $ kubectl apply -f config/worker-machine.yaml
-   ```
-
-1. **Pull kubeconfig from created master machine**
-
-   The master public IP can be accessed from AlibabaCloud Portal. Once done, you
-   can collect the kube config by running:
-
-   ```
-   $ ssh -i SSHPMKEY root@PUBLICIP 'sudo cat /root/.kube/config' > kubeconfig
-   $ kubectl --kubeconfig=kubeconfig config set-cluster kubernetes --server=https://PUBLICIP:6443
-   ```
-
-   Once done, you can access the cluster via `kubectl`. E.g.
-
-   ```sh
-   $ kubectl --kubeconfig=kubeconfig get nodes
-   ```
-
-
-## Deploy machine API plane with AlibabaCloud ACK Cluster
-
-1. **Creating ACK Cluster**
-
-    You can create a Kubernetes cluster using the CLI, TerraForm, or ACK console
-
-    CLI Document:
-    ```
-   https://www.alibabacloud.com/help/doc-detail/198808.htm
-    ```
-
-   TerraForm Document:
-    ```
-   https://www.alibabacloud.com/help/doc-detail/252824.htm
-    ```
-
-   ACK Console Document:
-    ```
-   https://www.alibabacloud.com/help/doc-detail/86488.htm
-    ```
-
-
-2. **Deploying machine API controllers**
-
-   For development purposes the AlibabaCloud machine controller itself will run out of the machine API stack.
-   Otherwise, docker images needs to be built, pushed into a docker registry and deployed within the stack.
-
-   To deploy the machine crds:
-    ```sh
-    $ kubectl apply -f config/crds/
-    ```
-
-   To deploy the machine rbac:
-    ```sh
-    $ kubectl apply -f config/rbac/
-    ```
-
-   To deploy the machine controller:
-    ```sh
-    $ kubectl apply -f config/controllers/
-    ```
-
-3. **Deploy secret with AlibabaCloud credentials**
-
-   AlibabaCloud actuator assumes existence of a secret file (references in machine object) with base64 encoded credentials:
-
-   ```yaml
-   apiVersion: v1
-   kind: Secret
-   metadata:
-     name: alibabacloud-credentials-secret
-     namespace: default
-   type: Opaque
-   data:
-     accessKeyID: FILLIN
-     accessKeySecret: FILLIN
-   ```
-
-   Save the above resource as **_secret.yaml_** and then apply it:
-   ```sh
-   $ kubectl apply -f secret.yaml
-   ``` 
-
-1. **Deploy k8s apiserver through machine manifest**:
-
-   To deploy user data secret with kubernetes apiserver initialization (under [config/master-user-data-secret.yaml](config/master-user-data-secret.yaml)):
-
-   ```sh
-   $ kubectl apply -f config/master-user-data-secret.yaml
-   ```
-
-   To deploy kubernetes master machine (under [config/master-machine.yaml](config/master-machine.yaml)):
-
-   ```sh
-   $ kubectl apply -f config/master-machine.yaml
-   ```
-
-1. **Join worker node through machine manifest**:
-
-   To deploy user data secret with kubernetes apiserver initialization (under [config/worker-user-data-secret.yaml](config/worker-user-data-secret.yaml)):
-
-   ```sh
-   $ kubectl apply -f config/worker-user-data-secret.yaml
-   ```
-
-   To deploy kubernetes worker machine (under [config/worker-machine.yaml](config/worker-machine.yaml)):
-
-   ```sh
-   $ kubectl apply -f config/worker-machine.yaml
-   ```
-
-1. **Pull kubeconfig from created master machine**
-
-   The master public IP can be accessed from AlibabaCloud Portal. Once done, you
-   can collect the kube config by running:
-
-   ```
-   $ ssh -i SSHPMKEY root@PUBLICIP 'sudo cat /root/.kube/config' > kubeconfig
-   $ kubectl --kubeconfig=kubeconfig config set-cluster kubernetes --server=https://PUBLICIP:6443
-   ```
-
-   Once done, you can access the cluster via `kubectl`. E.g.
-
-   ```sh
-   $ kubectl --kubeconfig=kubeconfig get nodes
-   ```
-
-### Add worker nodes to the ACK cluster via Machine-API
-
-1. **Deploy secret with AlibabaCloud worker nodes userdata**
-
-   AlibabaCloud actuator assumes existence of a secret file (references in machine object) with base64 encoded userdata:
-
-   How do I get the script to add worker nodes? You can refer to the documentation
-   
-   ```
-   https://www.alibabacloud.com/help/doc-detail/86919.htm
-   ```
-
-   And then generate the userdata:
-
-   ```sh
-   $ echo '#!/bin/bash  <Your worker node script>' | base64
-   ```
-
-   Replace FILLIN with userdata:
-   
-   ```yaml
-   apiVersion: v1
-   kind: Secret
-   metadata:
-     name: worker-user-data-secret
-     namespace: default
-   type: Opaque
-   data:
-    userData: FILLIN
-   ```
-
-   Save the above resource as **_worker-user-data-secret.yaml_** and then apply it:
-   ```sh
-   kubectl apply -f worker-user-data-secret.yaml
-   ``` 
-
- 1. **Add worker machine to ACK Cluster**
-    
-   ```yaml
-   apiVersion: machine.openshift.io/v1beta1
-   kind: Machine
-   metadata:
-     name: alibabacloud-actuator-testing-machine
-     namespace: default
-     labels:
-       machine.openshift.io/cluster-api-cluster: alibabacloud-actuator-k8s
-   spec:
-     metadata:
-       labels:
-         node-role.kubernetes.io/infra: ""
-     providerSpec:
-       value:
-         apiVersion: alibabacloudproviderconfig.openshift.io/v1
-         kind: AlibabaCloudMachineProviderConfig
-         instanceType: FILLIN
-         imageId: FILLIN
-         regionId: FILLIN
-         zoneId: FILLIN
-         securityGroupId: FILLIN
-         vpcId: FILLIN
-         vSwitchId: FILLIN
-         systemDiskCategory: FILLIN
-         systemDiskSize: FILLIN
-         internetMaxBandwidthOut: FILLIN
-         password: FILLIN
-         tags:
-           - key: openshift-node-group-config
-             value: node-config-node
-           - key: host-type
-             value: node
-           - key: sub-host-type
-             value: default
-         userDataSecret:
-           name: alibabacloud-worker-user-data-secret
-         credentialsSecret:
-           name: alibabacloud-credentials-secret
-   ```
-   
-     Save the above resource as **_worker-machine-with-user-data.yaml_** and then apply it:
-
-   ```sh
-   kubectl apply -f worker-machine-with-user-data.yaml
-   ``` 
-
-   Once done, you can describe the machine via `kubectl`. E.g.
-   
-   ```sh
-   $ kubectl  get machine
-   ```
+Fully implemented. Handles:
+- **Create**: `RunInstances` with instance type, image, vswitch, security groups, RAM role, user-data from Secret, tags
+- **Delete**: `StopInstance` + `DeleteInstance` (force)
+- **Status sync**: maps ECS instance status → CAPI Machine `Ready` condition
+- **Failure domain resolution**: reads `Machine.spec.failureDomain`, looks up `AlibabaCloudCluster.status.failureDomains` to find zone + vswitch ID automatically (multi-AZ)
+
+### Cluster Controller (`AlibabaCloudCluster`)
+
+Implemented for the **External Platform** use case:
+- **`reconcileVPC`**: copies `spec.vpcID → status.vpcID`; no VPC creation
+- **`reconcileSLB`**: skips if `spec.controlPlaneEndpoint.host` is set; no SLB creation
+- **`reconcileFailureDomains`**: publishes `spec.failureDomains → status.failureDomains` for CAPI to use during Machine assignment
+- **`deleteSLB`**: skips if `status.slbInstanceID == ""`  (never set in External Platform mode)
+- **`deleteVPC`**: only called when `spec.vpcID == ""` (i.e. never in External Platform mode)
+
+> **Note**: Full VPC/SLB lifecycle management (create/delete) is not implemented.
+> For the External Platform use case these stubs are complete and correct.
+
+## Prerequisites
+
+- OpenShift cluster installed on Alibaba Cloud (Agent-based or Assisted Installer)
+- CAPI CRDs installed on the cluster
+- ECS RAM Role with the following policies attached to worker nodes:
+  - `AliyunECSFullAccess` (or scoped policy for RunInstances/StopInstance/DeleteInstance/DescribeInstances)
+- RHCOS custom image imported into Alibaba Cloud as a custom image
+
+## Quick Start
+
+### 1. Install CAPI CRDs and controller
+
+```sh
+# Apply CRDs
+kubectl apply -f config/crd/bases/
+
+# Apply RBAC
+kubectl apply -f config/rbac/
+
+# Deploy controller (update image tag as needed)
+kubectl apply -f config/manager/manager.yaml
+```
+
+### 2. Create worker user-data Secret
+
+Generate the worker ignition config and upload it:
+
+```sh
+# For Agent-based install, extract the worker ignition from the installer output
+oc create secret generic worker-user-data \
+  --from-file=value=worker.ign \
+  -n openshift-cluster-api
+```
+
+### 3. Apply a MachineDeployment
+
+See [`examples/capi-machinedeployment.yaml`](examples/capi-machinedeployment.yaml) for
+complete single-AZ and multi-AZ examples.
+
+Fill in all `FILL_IN` placeholders, then:
+
+```sh
+# Edit the example
+cp examples/capi-machinedeployment.yaml my-workers.yaml
+vi my-workers.yaml
+
+# Apply
+oc apply -f my-workers.yaml
+
+# Watch machines come up
+oc get alibabacloudmachines -A
+oc get machines -A
+```
+
+### 4. Scale workers
+
+```sh
+oc scale machinedeployment CLUSTER_NAME-workers --replicas=5 -n openshift-cluster-api
+```
+
+## AlibabaCloudMachineTemplate spec reference
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AlibabaCloudMachineTemplate
+metadata:
+  name: my-worker
+  namespace: openshift-cluster-api
+spec:
+  template:
+    spec:
+      instanceType: ecs.c6.4xlarge     # required
+      imageID: m-xxxx                  # required; RHCOS custom image ID
+      regionID: cn-hangzhou            # required
+      zoneID: cn-hangzhou-k            # optional; omit for multi-AZ failure domain
+      vSwitchID: vsw-xxxx              # optional; omit for multi-AZ failure domain
+      securityGroupIDs:
+        - sg-xxxx                      # required; worker security group
+      ramRoleName: my-cluster-node-ram-role  # required; ECS RAM role for instance principal
+      systemDisk:
+        category: cloud_essd           # cloud_essd | cloud_efficiency | cloud_ssd
+        size: 120                      # GiB; minimum 120 for OpenShift
+      tags:
+        - key: kubernetes.io/cluster/CLUSTER_NAME
+          value: owned
+      userDataSecret:
+        name: worker-user-data         # Secret with key "value" containing ignition JSON
+      resourceGroupID: rg-xxxx         # optional
+```
+
+## Multi-AZ configuration
+
+Set `spec.failureDomains` in `AlibabaCloudCluster` and omit `zoneID`/`vSwitchID`
+from the `AlibabaCloudMachineTemplate`. CAPI will assign each Machine to a zone
+in round-robin order, and the Machine controller resolves the vSwitch from the
+cluster's failure domain list.
+
+```yaml
+# In AlibabaCloudCluster:
+spec:
+  failureDomains:
+    - zoneID: cn-hangzhou-h
+      vSwitchID: vsw-aaa
+    - zoneID: cn-hangzhou-i
+      vSwitchID: vsw-bbb
+    - zoneID: cn-hangzhou-k
+      vSwitchID: vsw-ccc
+```
+
+See `examples/capi-machinedeployment.yaml` — Scenario B for the full multi-AZ example.
+
+## Development
+
+### Build
+
+```sh
+# Build local binary
+make build
+
+# Run tests
+make test
+
+# Build container image (requires podman or docker)
+make image IMAGE=quay.io/myorg/openshift-capi-alicloud:dev
+make push  IMAGE=quay.io/myorg/openshift-capi-alicloud:dev
+```
+
+### Regenerate CRDs and DeepCopy
+
+```sh
+make generate
+```
+
+### Project layout
+
+```
+api/v1beta1/          API types (AlibabaCloudCluster, AlibabaCloudMachine, ...)
+cmd/                  Manager entrypoint
+config/
+  crd/bases/          Generated CRD YAML
+  rbac/               RBAC manifests
+  manager/            Controller Deployment manifest
+examples/             Ready-to-use MachineDeployment examples
+internal/controller/  Cluster + Machine reconcilers
+pkg/client/           Alibaba Cloud SDK wrapper (ECS, VPC, SLB, RAM)
+pkg/utils/            Ignition user-data helpers
+```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+Apache License 2.0 — see [LICENSE](LICENSE).
