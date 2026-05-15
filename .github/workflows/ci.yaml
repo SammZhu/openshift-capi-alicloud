@@ -107,12 +107,18 @@ jobs:
             -f Dockerfile \
             .
 
+      # GitHub Actions does NOT allow `secrets` in step-level `if`. Push the
+      # check down into bash so the step always runs and silently no-ops when
+      # the registry credentials are not configured (forks, etc).
       - name: Push container image
-        if: ${{ secrets.REGISTRY_USER != '' }}
         env:
           REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
           REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
         run: |
+          if [ -z "$REGISTRY_USER" ]; then
+            echo "REGISTRY_USER secret not configured — skipping push."
+            exit 0
+          fi
           echo "$REGISTRY_PASSWORD" | docker login quay.io -u "$REGISTRY_USER" --password-stdin
           docker push ${{ steps.tag.outputs.image }}
           docker push quay.io/samzhu/openshift-capi-alicloud:latest
