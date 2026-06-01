@@ -2,8 +2,11 @@ package client
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk"
+	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth"
+	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth/credentials"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/resourcemanager"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/slb"
@@ -51,31 +54,72 @@ type InstanceDescription struct {
 // credentials resolved from the in-cluster controller-runtime client.
 type ClientBuilderFunc func(c runtimeclient.Client, region string) (Client, error)
 
+// resolveCredential builds an Alibaba Cloud SDK credential for CAPA.
+//
+// The Alibaba Cloud Go SDK's NewClientWithOptions does NOT auto-discover
+// credentials when the credential argument is nil — it returns
+// SDK.UnsupportedCredential.  We resolve credentials explicitly here, in
+// this order:
+//
+//  1. AccessKey from environment variables.  Both
+//     ALIBABA_CLOUD_ACCESS_KEY_{ID,SECRET} (the newer
+//     alibabacloud-credentials-go spelling) and the older
+//     ALIBABACLOUD_ACCESS_KEY_{ID,SECRET} are accepted.
+//  2. ECS RAM role from the instance metadata service, when env var
+//     ALIBABA_CLOUD_ECS_METADATA names the role to assume (mirrors the
+//     convention used by cloud-provider-alibaba-cloud).
+//  3. nil — preserves the previous fail-loud behaviour for callers that
+//     want NewClientWithOptions to return UnsupportedCredential.
+func resolveCredential() auth.Credential {
+	ak := firstNonEmpty("ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABACLOUD_ACCESS_KEY_ID")
+	sk := firstNonEmpty("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "ALIBABACLOUD_ACCESS_KEY_SECRET")
+	if ak != "" && sk != "" {
+		klog.V(2).Info("alibaba: using AccessKey credential from environment")
+		return credentials.NewAccessKeyCredential(ak, sk)
+	}
+	if role := os.Getenv("ALIBABA_CLOUD_ECS_METADATA"); role != "" {
+		klog.V(2).Infof("alibaba: using ECS RAM role credential: %s", role)
+		return credentials.NewEcsRamRoleCredential(role)
+	}
+	klog.Warning("alibaba: no credentials in environment; SDK will return UnsupportedCredential")
+	return nil
+}
+
+func firstNonEmpty(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // NewCAPIClient creates an Alibaba Cloud Client suitable for CAPI controllers.
-// Credentials are resolved from environment / RAM-role (ambient credentials).
+// Credentials are resolved from environment / RAM-role (see resolveCredential).
 func NewCAPIClient(_ runtimeclient.Client, regionID string) (Client, error) {
 	sdkConfig := &sdk.Config{
 		UserAgent: machineProviderUserAgent,
 		Scheme:    "HTTPS",
 	}
 
-	// Use SDK's default credential chain (RAM role, env vars, etc.).
-	ecsClient, err := ecs.NewClientWithOptions(regionID, sdkConfig, nil)
+	cred := resolveCredential()
+
+	ecsClient, err := ecs.NewClientWithOptions(regionID, sdkConfig, cred)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ECS client for region %s: %w", regionID, err)
 	}
 
-	vpcClient, err := newVPCClient(regionID, sdkConfig)
+	vpcClient, err := newVPCClient(regionID, sdkConfig, cred)
 	if err != nil {
 		return nil, err
 	}
 
-	slbClient, err := newSLBClient(regionID, sdkConfig)
+	slbClient, err := newSLBClient(regionID, sdkConfig, cred)
 	if err != nil {
 		return nil, err
 	}
 
-	rmClient, err := newRMClient(regionID, sdkConfig)
+	rmClient, err := newRMClient(regionID, sdkConfig, cred)
 	if err != nil {
 		return nil, err
 	}
@@ -88,24 +132,24 @@ func NewCAPIClient(_ runtimeclient.Client, regionID string) (Client, error) {
 	}, nil
 }
 
-func newVPCClient(regionID string, sdkConfig *sdk.Config) (*vpc.Client, error) {
-	c, err := vpc.NewClientWithOptions(regionID, sdkConfig, nil)
+func newVPCClient(regionID string, sdkConfig *sdk.Config, cred auth.Credential) (*vpc.Client, error) {
+	c, err := vpc.NewClientWithOptions(regionID, sdkConfig, cred)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create VPC client: %w", err)
 	}
 	return c, nil
 }
 
-func newSLBClient(regionID string, sdkConfig *sdk.Config) (*slb.Client, error) {
-	c, err := slb.NewClientWithOptions(regionID, sdkConfig, nil)
+func newSLBClient(regionID string, sdkConfig *sdk.Config, cred auth.Credential) (*slb.Client, error) {
+	c, err := slb.NewClientWithOptions(regionID, sdkConfig, cred)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SLB client: %w", err)
 	}
 	return c, nil
 }
 
-func newRMClient(regionID string, sdkConfig *sdk.Config) (*resourcemanager.Client, error) {
-	c, err := resourcemanager.NewClientWithOptions(regionID, sdkConfig, nil)
+func newRMClient(regionID string, sdkConfig *sdk.Config, cred auth.Credential) (*resourcemanager.Client, error) {
+	c, err := resourcemanager.NewClientWithOptions(regionID, sdkConfig, cred)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ResourceManager client: %w", err)
 	}
