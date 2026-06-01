@@ -13,8 +13,27 @@ var (
 	Raw = "v0.1.0-alpha.1"
 
 	// Version is semver representation of the version.
-	Version = semver.MustParse(strings.TrimLeft(Raw, "v"))
+	// Build-time ldflags injection (-X .../version.Raw=$(VERSION)) where the
+	// Makefile's VERSION falls back to `git describe --tags --always --dirty`
+	// can produce non-semver strings like "7df900c-dirty" when no tag is
+	// reachable.  semver.MustParse on that panics during package init() and
+	// crashes the binary before main() runs (observed 2026-06-01 in the
+	// :v0.1.0 image: `panic: semver: Parse(7df900c-dirty): No Major.Minor.Patch
+	// elements found`).  Use a forgiving parse that falls back to a stable
+	// default instead of panicking.
+	Version = parseVersionOrFallback(Raw)
 )
+
+// parseVersionOrFallback parses raw as a SemVer (stripping a leading "v" if
+// present); on parse failure it returns "0.0.0-dev" so that an unusual
+// build-time version string (bare git SHA, "dev", etc.) cannot crash the
+// binary at init() time.
+func parseVersionOrFallback(raw string) semver.Version {
+	if v, err := semver.Parse(strings.TrimLeft(raw, "v")); err == nil {
+		return v
+	}
+	return semver.MustParse("0.0.0-dev")
+}
 
 var (
 	gitMajor         string // major version, always numeric
