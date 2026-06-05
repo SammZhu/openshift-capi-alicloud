@@ -2,8 +2,10 @@ package controller
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -349,5 +351,98 @@ func TestReconcile_ClusterNotReady_Requeues(t *testing.T) {
 	}
 	if res.RequeueAfter == 0 {
 		t.Errorf("expected non-zero RequeueAfter when cluster is not ready, got %v", res)
+	}
+}
+
+// ── P3-CAPA.1 region resolution + providerID format ─────────────────────────
+
+func TestResolveRegion_SpecWins(t *testing.T) {
+	m := &infrav1.AlibabaCloudMachine{Spec: infrav1.AlibabaCloudMachineSpec{RegionID: "cn-hangzhou"}}
+	c := &infrav1.AlibabaCloudCluster{Spec: infrav1.AlibabaCloudClusterSpec{Region: "cn-wulanchabu"}}
+	if got := resolveRegion(m, c); got != "cn-hangzhou" {
+		t.Fatalf("want cn-hangzhou, got %q", got)
+	}
+}
+
+func TestResolveRegion_FallsBackToCluster(t *testing.T) {
+	m := &infrav1.AlibabaCloudMachine{} // Spec.RegionID empty
+	c := &infrav1.AlibabaCloudCluster{Spec: infrav1.AlibabaCloudClusterSpec{Region: "cn-wulanchabu"}}
+	if got := resolveRegion(m, c); got != "cn-wulanchabu" {
+		t.Fatalf("want cn-wulanchabu, got %q", got)
+	}
+}
+
+func TestProviderIDFor_SlashFormat(t *testing.T) {
+	if got := providerIDFor("cn-wulanchabu", "i-abc123"); got != "alicloud://cn-wulanchabu/i-abc123" {
+		t.Fatalf("want alicloud://cn-wulanchabu/i-abc123, got %q", got)
+	}
+}
+
+func TestRegionFromMachine_SlashProviderID(t *testing.T) {
+	m := &infrav1.AlibabaCloudMachine{Spec: infrav1.AlibabaCloudMachineSpec{
+		ProviderID: ptr("alicloud://cn-wulanchabu/i-abc123"),
+	}}
+	got, err := regionFromMachine(m)
+	if err != nil || got != "cn-wulanchabu" {
+		t.Fatalf("want cn-wulanchabu/nil, got %q/%v", got, err)
+	}
+}
+
+func TestRegionFromMachine_LegacyDotProviderID(t *testing.T) {
+	m := &infrav1.AlibabaCloudMachine{Spec: infrav1.AlibabaCloudMachineSpec{
+		ProviderID: ptr("alicloud://cn-hangzhou.i-legacy"),
+	}}
+	got, err := regionFromMachine(m)
+	if err != nil || got != "cn-hangzhou" {
+		t.Fatalf("want cn-hangzhou/nil, got %q/%v", got, err)
+	}
+}
+
+func TestRegionFromMachine_EmptyRegionSegmentErrors(t *testing.T) {
+	// The original bug: alicloud://.i-abc (dot form, empty region).
+	m := &infrav1.AlibabaCloudMachine{Spec: infrav1.AlibabaCloudMachineSpec{
+		ProviderID: ptr("alicloud://.i-abc"),
+	}}
+	if _, err := regionFromMachine(m); err == nil {
+		t.Fatal("want error for empty region segment, got nil")
+	}
+}
+
+// ── P3-CAPA.2 bootstrap data source precedence ──────────────────────────────
+
+func TestGetUserData_PrefersMachineBootstrap(t *testing.T) {
+	s := newTestScheme(t)
+	if err := corev1.AddToScheme(s); err != nil {
+		t.Fatalf("AddToScheme corev1: %v", err)
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "boot-secret", Namespace: "default"},
+		Data:       map[string][]byte{"value": []byte("hello-ignition")},
+	}
+	cl := fake.NewClientBuilder().WithScheme(s).WithObjects(secret).Build()
+	r := &AlibabaCloudMachineReconciler{Client: cl}
+	machine := &clusterv1.Machine{Spec: clusterv1.MachineSpec{
+		Bootstrap: clusterv1.Bootstrap{DataSecretName: ptr("boot-secret")},
+	}}
+	m := &infrav1.AlibabaCloudMachine{ObjectMeta: metav1.ObjectMeta{Namespace: "default"}}
+	got, err := r.getUserData(context.Background(), machine, m)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	want := base64.StdEncoding.EncodeToString([]byte("hello-ignition"))
+	if got != want {
+		t.Fatalf("want %q, got %q", want, got)
+	}
+}
+
+func TestGetUserData_NoBootstrapNoLegacyReturnsEmpty(t *testing.T) {
+	s := newTestScheme(t)
+	cl := fake.NewClientBuilder().WithScheme(s).Build()
+	r := &AlibabaCloudMachineReconciler{Client: cl}
+	machine := &clusterv1.Machine{} // Bootstrap.DataSecretName nil
+	m := &infrav1.AlibabaCloudMachine{ObjectMeta: metav1.ObjectMeta{Namespace: "default"}}
+	got, err := r.getUserData(context.Background(), machine, m)
+	if err != nil || got != "" {
+		t.Fatalf("want empty/nil, got %q/%v", got, err)
 	}
 }

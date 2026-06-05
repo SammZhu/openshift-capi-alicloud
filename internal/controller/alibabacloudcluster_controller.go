@@ -134,14 +134,29 @@ func (r *AlibabaCloudClusterReconciler) reconcileNormal(ctx context.Context, clu
 		return ctrl.Result{}, err
 	}
 
-	if err := r.reconcileSLB(ctx, alibabaCluster); err != nil {
+	if err := r.reconcileControlPlaneEndpoint(ctx, alibabaCluster); err != nil {
 		conditions.Set(alibabaCluster, metav1.Condition{
 			Type:    clusterv1.ReadyCondition,
 			Status:  metav1.ConditionFalse,
-			Reason:  "SLBReconcileError",
+			Reason:  "ControlPlaneEndpointError",
 			Message: err.Error(),
 		})
 		return ctrl.Result{}, err
+	}
+
+	// CAPI infra-cluster contract: status.controlPlaneEndpoint must be set
+	// before status.ready=true.  In BYO mode the endpoint comes from the spec
+	// (provisioned out-of-band by ROS); without it, mark not-ready and requeue
+	// rather than reporting a cluster that downstream controllers can't reach.
+	if alibabaCluster.Status.ControlPlaneEndpoint.Host == "" {
+		log.Info("controlPlaneEndpoint not yet available, requeueing")
+		conditions.Set(alibabaCluster, metav1.Condition{
+			Type:    clusterv1.ReadyCondition,
+			Status:  metav1.ConditionFalse,
+			Reason:  "ControlPlaneEndpointMissing",
+			Message: "spec.controlPlaneEndpoint is required (BYO infrastructure) and is not set",
+		})
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
 	conditions.Set(alibabaCluster, metav1.Condition{
@@ -206,11 +221,19 @@ func (r *AlibabaCloudClusterReconciler) reconcileVPC(ctx context.Context, alibab
 	return nil
 }
 
-func (r *AlibabaCloudClusterReconciler) reconcileSLB(ctx context.Context, alibabaCluster *infrav1.AlibabaCloudCluster) error {
+// reconcileControlPlaneEndpoint mirrors the BYO Spec.ControlPlaneEndpoint into
+// status so downstream controllers (Machine, control-plane provider) can reach
+// the API server.  This provider does not provision an SLB — the control-plane
+// endpoint (api-int NLB / PrivateZone) is created out-of-band by ROS, so the
+// operator supplies it via Spec.ControlPlaneEndpoint.  When the spec endpoint
+// is empty we leave status empty; reconcileNormal then keeps the cluster
+// not-ready (see the ControlPlaneEndpointMissing gate).
+func (r *AlibabaCloudClusterReconciler) reconcileControlPlaneEndpoint(ctx context.Context, alibabaCluster *infrav1.AlibabaCloudCluster) error {
 	if alibabaCluster.Spec.ControlPlaneEndpoint.Host != "" {
+		alibabaCluster.Status.ControlPlaneEndpoint = alibabaCluster.Spec.ControlPlaneEndpoint
 		return nil
 	}
-	ctrl.LoggerFrom(ctx).Info("SLB creation not yet implemented, skipping")
+	ctrl.LoggerFrom(ctx).Info("spec.controlPlaneEndpoint is empty; SLB provisioning is out-of-scope (BYO via ROS)")
 	return nil
 }
 

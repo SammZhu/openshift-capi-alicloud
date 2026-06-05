@@ -56,6 +56,13 @@ type AlibabaCloudClusterStatus struct {
 	// +optional
 	VpcID string `json:"vpcID,omitempty"`
 
+	// ControlPlaneEndpoint is the endpoint downstream consumers (Machine
+	// controller, control-plane provider) use to reach the API server.
+	// In BYO mode it mirrors Spec.ControlPlaneEndpoint; the CAPI infra-cluster
+	// contract requires this to be populated before status.ready=true.
+	// +optional
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+
 	// SLBInstanceID is the ID of the Server Load Balancer created for the
 	// control plane endpoint.
 	// +optional

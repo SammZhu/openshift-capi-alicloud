@@ -134,6 +134,22 @@ func (r *AlibabaCloudMachineReconciler) reconcileNormal(
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
+	// CAPI contract: do not create the instance until the bootstrap provider
+	// has produced the data secret and the Machine controller has populated
+	// Spec.Bootstrap.DataSecretName.  Booting an ECS without bootstrap data
+	// would leave a node that never joins.  Skip this gate only when the
+	// machine carries the legacy Spec.UserDataSecret (pre-CAPI-bootstrap use).
+	if machine.Spec.Bootstrap.DataSecretName == nil && alibabaCloudMachine.Spec.UserDataSecret == nil {
+		log.Info("Waiting for bootstrap data secret to be available")
+		conditions.Set(alibabaCloudMachine, metav1.Condition{
+			Type:    clusterv1.ReadyCondition,
+			Status:  metav1.ConditionFalse,
+			Reason:  "WaitingForBootstrapData",
+			Message: "bootstrap data secret reference is not yet available",
+		})
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	}
+
 	// Resolve zone and VSwitch from the CAPI-assigned failure domain when not
 	// explicitly set in the machine spec. This enables automatic multi-AZ
 	// spreading when AlibabaCloudCluster.Spec.FailureDomains is configured.
@@ -147,10 +163,7 @@ func (r *AlibabaCloudMachineReconciler) reconcileNormal(
 		return ctrl.Result{}, err
 	}
 
-	region := alibabaCloudMachine.Spec.RegionID
-	if region == "" {
-		region = alibabaCluster.Spec.Region
-	}
+	region := resolveRegion(alibabaCloudMachine, alibabaCluster)
 
 	alibabaSDKClient, err := r.AlibabaCloudClientBuilder(r.Client, region)
 	if err != nil {
@@ -209,16 +222,50 @@ func (r *AlibabaCloudMachineReconciler) reconcileDelete(ctx context.Context, ali
 	return ctrl.Result{}, nil
 }
 
-// regionFromMachine returns the region for a machine, falling back to parsing the ProviderID.
+// resolveRegion returns the effective region for a machine: the explicit
+// Spec.RegionID when set, otherwise the owning cluster's Spec.Region.
+// AlibabaCloudMachine.Spec.RegionID is optional (region normally lives on the
+// cluster), so callers that need a region for SDK calls / providerID MUST go
+// through this — using Spec.RegionID directly yields "" and breaks both the
+// ECS client and the providerID.
+func resolveRegion(m *infrav1.AlibabaCloudMachine, c *infrav1.AlibabaCloudCluster) string {
+	if m.Spec.RegionID != "" {
+		return m.Spec.RegionID
+	}
+	if c != nil {
+		return c.Spec.Region
+	}
+	return ""
+}
+
+// providerIDFor builds a CAPI-conformant providerID.  The Cluster API
+// convention is alicloud://<region>/<instanceID> (slash-separated).  An
+// earlier build used a dot separator AND Spec.RegionID (often empty),
+// producing "alicloud://.i-abc" — which regionFromMachine could not parse,
+// so deletion failed with "cannot determine region" and the finalizer hung.
+func providerIDFor(region, instanceID string) string {
+	return fmt.Sprintf("alicloud://%s/%s", region, instanceID)
+}
+
+// regionFromMachine returns the region for a machine for use on the delete
+// path (where the owning cluster is not loaded).  Tries, in order:
+//  1. Spec.RegionID
+//  2. region segment of the providerID — accepts the current slash form
+//     (alicloud://<region>/<id>) and the legacy dot form
+//     (alicloud://<region>.<id>) for backward compatibility with machines
+//     created before the format fix.
 func regionFromMachine(m *infrav1.AlibabaCloudMachine) (string, error) {
 	if m.Spec.RegionID != "" {
 		return m.Spec.RegionID, nil
 	}
 	if m.Spec.ProviderID != nil {
-		// format: alicloud://<region>.<instanceID>
 		trimmed := strings.TrimPrefix(*m.Spec.ProviderID, "alicloud://")
-		parts := strings.SplitN(trimmed, ".", 2)
-		if len(parts) == 2 && parts[0] != "" {
+		// Current form: <region>/<instanceID>
+		if parts := strings.SplitN(trimmed, "/", 2); len(parts) == 2 && parts[0] != "" {
+			return parts[0], nil
+		}
+		// Legacy form: <region>.<instanceID>
+		if parts := strings.SplitN(trimmed, ".", 2); len(parts) == 2 && parts[0] != "" {
 			return parts[0], nil
 		}
 	}
@@ -304,7 +351,7 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 	alibabaCluster *infrav1.AlibabaCloudCluster,
 	alibabaCloudMachine *infrav1.AlibabaCloudMachine,
 ) error {
-	userData, err := r.getUserData(ctx, alibabaCloudMachine)
+	userData, err := r.getUserData(ctx, machine, alibabaCloudMachine)
 	if err != nil {
 		return err
 	}
@@ -316,8 +363,13 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 		diskSize = alibabaCloudMachine.Spec.SystemDisk.Size
 	}
 
+	// Region resolves to the cluster's region when the machine omits it.
+	// Both RunInstances and the providerID must use this resolved value —
+	// never Spec.RegionID directly (it is usually empty; see resolveRegion).
+	region := resolveRegion(alibabaCloudMachine, alibabaCluster)
+
 	resp, err := c.CreateECSInstance(alibabaClient.CreateInstanceParams{
-		RegionID:           alibabaCloudMachine.Spec.RegionID,
+		RegionID:           region,
 		ZoneID:             alibabaCloudMachine.Spec.ZoneID,
 		InstanceType:       alibabaCloudMachine.Spec.InstanceType,
 		ImageID:            alibabaCloudMachine.Spec.ImageID,
@@ -335,7 +387,7 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 	}
 
 	instanceID := resp.InstanceID
-	providerID := fmt.Sprintf("alicloud://%s.%s", alibabaCloudMachine.Spec.RegionID, instanceID)
+	providerID := providerIDFor(region, instanceID)
 	alibabaCloudMachine.Spec.ProviderID = &providerID
 	alibabaCloudMachine.Status.InstanceID = &instanceID
 	alibabaCloudMachine.Status.InstanceState = &infrav1.InstanceStatePending
@@ -374,21 +426,37 @@ func (r *AlibabaCloudMachineReconciler) syncInstanceStatus(m *infrav1.AlibabaClo
 	return info
 }
 
-func (r *AlibabaCloudMachineReconciler) getUserData(ctx context.Context, m *infrav1.AlibabaCloudMachine) (string, error) {
-	if m.Spec.UserDataSecret == nil {
+// getUserData resolves the cloud-init / Ignition payload for the instance.
+// CAPI convention: a bootstrap provider writes the data to a Secret and sets
+// the name on the owning Machine's Spec.Bootstrap.DataSecretName.  We read
+// that first, falling back to the (legacy, machine-api-style)
+// AlibabaCloudMachine.Spec.UserDataSecret for backward compatibility.
+// The Secret stores the payload under the "value" key in both conventions.
+func (r *AlibabaCloudMachineReconciler) getUserData(
+	ctx context.Context,
+	machine *clusterv1.Machine,
+	m *infrav1.AlibabaCloudMachine,
+) (string, error) {
+	var secretName string
+	switch {
+	case machine.Spec.Bootstrap.DataSecretName != nil && *machine.Spec.Bootstrap.DataSecretName != "":
+		secretName = *machine.Spec.Bootstrap.DataSecretName
+	case m.Spec.UserDataSecret != nil:
+		secretName = m.Spec.UserDataSecret.Name
+	default:
 		return "", nil
 	}
+
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, client.ObjectKey{
 		Namespace: m.Namespace,
-		Name:      m.Spec.UserDataSecret.Name,
+		Name:      secretName,
 	}, secret); err != nil {
-		return "", fmt.Errorf("failed to get user data secret %q: %w", m.Spec.UserDataSecret.Name, err)
+		return "", fmt.Errorf("failed to get bootstrap/user-data secret %q: %w", secretName, err)
 	}
-	// CAPI convention: userData is stored under the "value" key.
 	raw, ok := secret.Data["value"]
 	if !ok {
-		return "", fmt.Errorf("user data secret %q has no 'value' key", m.Spec.UserDataSecret.Name)
+		return "", fmt.Errorf("bootstrap/user-data secret %q has no 'value' key", secretName)
 	}
 	// Secret.Data is already raw bytes (k8s base64-decodes it on retrieval).
 	// ECS RunInstances expects a base64-encoded string.
