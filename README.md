@@ -27,7 +27,22 @@ In this mode:
 - CAPI manages **worker node lifecycle only**: scale out, scale in, health remediation
 - Multi-AZ worker spreading is handled via `spec.failureDomains` in `AlibabaCloudCluster`
 
-Authentication uses the **ECS RAM Role** instance principal — no AK/SK required.
+### Authentication (since v0.1.2)
+
+The Alibaba Cloud Go SDK's `NewClientWithOptions` does **not** auto-discover
+credentials when passed a nil credential — it returns
+`SDK.UnsupportedCredential`.  The controller resolves credentials explicitly,
+in order (`pkg/client/capi.go` → `resolveCredential`):
+
+1. **AccessKey from environment** — `ALIBABA_CLOUD_ACCESS_KEY_{ID,SECRET}`
+   (also accepts the older `ALIBABACLOUD_*` spelling).  Inject via a Secret +
+   `envFrom` on the controller Deployment — see the `alibaba-creds` pattern in
+   `alibaba-openshift/custom_manifests/02-capa-controller.yaml`.
+2. **ECS RAM role** — when `ALIBABA_CLOUD_ECS_METADATA` names the role to assume.
+3. nil — preserves loud-failure for an empty environment.
+
+> Earlier docs claimed "no AK/SK required (RAM role instance principal)".
+> That was never correct with the upstream SDK behaviour; fixed in v0.1.2.
 
 ## Architecture
 
@@ -49,29 +64,71 @@ CAPI (this provider)
 ### Machine Controller (`AlibabaCloudMachine`)
 
 Fully implemented. Handles:
-- **Create**: `RunInstances` with instance type, image, vswitch, security groups, RAM role, user-data from Secret, tags
-- **Delete**: `StopInstance` + `DeleteInstance` (force)
-- **Status sync**: maps ECS instance status → CAPI Machine `Ready` condition
-- **Failure domain resolution**: reads `Machine.spec.failureDomain`, looks up `AlibabaCloudCluster.status.failureDomains` to find zone + vswitch ID automatically (multi-AZ)
+- **Bootstrap gate** (since v0.1.3): requeues with `WaitingForBootstrapData`
+  until the owning `Machine` has `spec.bootstrap.dataSecretName` set (CAPI
+  contract) — so a node is never booted without its ignition/cloud-init.
+- **Create**: `RunInstances` with instance type, image, vswitch, security
+  groups, RAM role, tags, and user-data resolved from
+  `Machine.spec.bootstrap.dataSecretName` (CAPI standard) with a fallback to
+  the legacy `AlibabaCloudMachine.spec.userDataSecret`.
+- **Region**: resolved via `resolveRegion` — `spec.regionID` if set, else the
+  owning cluster's `spec.region` (machine RegionID is optional).
+- **providerID**: CAPI-conformant `alicloud://<region>/<instanceID>` (slash).
+  Earlier builds used a dot AND the often-empty `spec.regionID`, yielding
+  `alicloud://.i-abc` which the delete path could not parse → finalizer hung.
+  Fixed in v0.1.3; `regionFromMachine` still accepts the legacy dot form.
+- **Delete**: resolves region from `spec.regionID` or the providerID, then
+  `StopInstance` + `DeleteInstance` (force); finalizer is removed afterward.
+- **Status sync**: maps ECS instance status → CAPI Machine `Ready` condition,
+  publishes node addresses.
+- **Failure domain resolution**: reads `Machine.spec.failureDomain`, looks up
+  `AlibabaCloudCluster.status.failureDomains` to find zone + vswitch ID
+  automatically (multi-AZ).
+- **Paused**: honours the `cluster.x-k8s.io/paused` annotation
+  (`annotations.IsPaused`).
 
 ### Cluster Controller (`AlibabaCloudCluster`)
 
 Implemented for the **External Platform** use case:
 - **`reconcileVPC`**: copies `spec.vpcID → status.vpcID`; no VPC creation
-- **`reconcileSLB`**: skips if `spec.controlPlaneEndpoint.host` is set; no SLB creation
+- **`reconcileControlPlaneEndpoint`** (renamed from `reconcileSLB` in v0.1.3):
+  mirrors the BYO `spec.controlPlaneEndpoint → status.controlPlaneEndpoint`.
+  This provider does **not** provision an SLB — the api-int endpoint (NLB /
+  PrivateZone) is created out-of-band by ROS and supplied via the spec.
+- **Ready gate** (since v0.1.3): `status.ready` is only set `true` once
+  `status.controlPlaneEndpoint.host != ""` (CAPI infra-cluster contract).
+  While empty, the cluster stays not-ready with reason
+  `ControlPlaneEndpointMissing` and requeues, rather than reporting a cluster
+  downstream controllers cannot reach.
 - **`reconcileFailureDomains`**: publishes `spec.failureDomains → status.failureDomains` for CAPI to use during Machine assignment
 - **`deleteSLB`**: skips if `status.slbInstanceID == ""`  (never set in External Platform mode)
 - **`deleteVPC`**: only called when `spec.vpcID == ""` (i.e. never in External Platform mode)
+- **Paused**: honours the `cluster.x-k8s.io/paused` annotation.
 
 > **Note**: Full VPC/SLB lifecycle management (create/delete) is not implemented.
 > For the External Platform use case these stubs are complete and correct.
+
+### CAPI contract conditions
+
+The controllers surface standard CAPI status reasons so `clusterctl describe`
+and downstream automation behave predictably:
+
+| Reason | Set by | Meaning |
+|---|---|---|
+| `WaitingForBootstrapData` | Machine | Owning `Machine` has no `spec.bootstrap.dataSecretName` yet; no ECS created. |
+| `ControlPlaneEndpointMissing` | Cluster | `spec/status.controlPlaneEndpoint` is empty (BYO endpoint not supplied). |
+| `ControlPlaneEndpointError` / `VPCReconcileError` / `FailureDomainError` | Cluster | The corresponding reconcile step failed. |
+| `AlibabaClientError` | Cluster / Machine | Could not build the Alibaba Cloud SDK client (see Authentication). |
 
 ## Prerequisites
 
 - OpenShift cluster installed on Alibaba Cloud (Agent-based or Assisted Installer)
 - CAPI CRDs installed on the cluster
-- ECS RAM Role with the following policies attached to worker nodes:
-  - `AliyunECSFullAccess` (or scoped policy for RunInstances/StopInstance/DeleteInstance/DescribeInstances)
+- Alibaba Cloud credentials for the controller (see [Authentication](#authentication-since-v012)):
+  either an AccessKey pair injected via Secret + `envFrom`, or an ECS RAM role
+  named through `ALIBABA_CLOUD_ECS_METADATA`. The principal needs
+  `AliyunECSFullAccess` (or a scoped policy for
+  RunInstances/StopInstance/DeleteInstance/DescribeInstances).
 - RHCOS custom image imported into Alibaba Cloud as a custom image
 
 ## Quick Start
@@ -152,7 +209,12 @@ spec:
         - key: kubernetes.io/cluster/CLUSTER_NAME
           value: owned
       userDataSecret:
-        name: worker-user-data         # Secret with key "value" containing ignition JSON
+        name: worker-user-data         # optional/legacy fallback — Secret with key
+                                       # "value" containing ignition JSON. Normally
+                                       # CAPI supplies user-data via the owning
+                                       # Machine's spec.bootstrap.dataSecretName, so
+                                       # this can be omitted for MachineDeployment-
+                                       # managed workers.
       resourceGroupID: rg-xxxx         # optional
 ```
 
