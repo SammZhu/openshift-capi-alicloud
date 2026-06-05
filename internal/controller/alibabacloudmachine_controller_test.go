@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -13,6 +14,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	runtimeclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	infrav1 "github.com/SammZhu/openshift-capi-alicloud/api/v1beta1"
 	alibabaClient "github.com/SammZhu/openshift-capi-alicloud/pkg/client"
@@ -444,5 +446,188 @@ func TestGetUserData_NoBootstrapNoLegacyReturnsEmpty(t *testing.T) {
 	got, err := r.getUserData(context.Background(), machine, m)
 	if err != nil || got != "" {
 		t.Fatalf("want empty/nil, got %q/%v", got, err)
+	}
+}
+
+// ── reconcileDelete — wait-for-terminated (#26) ─────────────────────────────────
+
+// machineWithInstance builds an AlibabaCloudMachine in deletion, carrying the
+// finalizer + an InstanceID + a region so reconcileDelete can run end-to-end.
+func machineWithInstance(id string) *infrav1.AlibabaCloudMachine {
+	m := &infrav1.AlibabaCloudMachine{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "m"},
+		Spec:       infrav1.AlibabaCloudMachineSpec{RegionID: "cn-hangzhou"},
+		Status:     infrav1.AlibabaCloudMachineStatus{InstanceID: &id},
+	}
+	controllerutil.AddFinalizer(m, infrav1.MachineFinalizer)
+	return m
+}
+
+func TestReconcileDelete_NoInstanceID_RemovesFinalizer(t *testing.T) {
+	r := &AlibabaCloudMachineReconciler{}
+	m := &infrav1.AlibabaCloudMachine{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "m"}}
+	controllerutil.AddFinalizer(m, infrav1.MachineFinalizer)
+
+	res, err := r.reconcileDelete(context.Background(), m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("should not requeue when nothing was provisioned, got %v", res.RequeueAfter)
+	}
+	if controllerutil.ContainsFinalizer(m, infrav1.MachineFinalizer) {
+		t.Error("finalizer should be removed when there is no instance")
+	}
+}
+
+func TestReconcileDelete_StillRunning_IssuesDeleteAndRequeues(t *testing.T) {
+	deleteCalls := 0
+	fakeECS := &fakeclient.FakeClient{
+		DescribeInstanceByIDFn: func(id string) (*alibabaClient.InstanceDescription, error) {
+			return &alibabaClient.InstanceDescription{InstanceID: id, Status: string(infrav1.InstanceStateRunning)}, nil
+		},
+		DeleteECSInstanceFn: func(id string, force bool) error {
+			deleteCalls++
+			if !force {
+				t.Error("delete should be forced")
+			}
+			return nil
+		},
+	}
+	r := &AlibabaCloudMachineReconciler{AlibabaCloudClientBuilder: fakeBuilder(fakeECS)}
+	m := machineWithInstance("i-run")
+
+	res, err := r.reconcileDelete(context.Background(), m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deleteCalls != 1 {
+		t.Errorf("expected exactly 1 delete call for a Running instance, got %d", deleteCalls)
+	}
+	if res.RequeueAfter == 0 {
+		t.Error("should requeue to poll for termination")
+	}
+	if !controllerutil.ContainsFinalizer(m, infrav1.MachineFinalizer) {
+		t.Error("finalizer must NOT be removed while the instance still exists")
+	}
+}
+
+func TestReconcileDelete_Stopping_DoesNotReDelete(t *testing.T) {
+	deleteCalls := 0
+	fakeECS := &fakeclient.FakeClient{
+		DescribeInstanceByIDFn: func(id string) (*alibabaClient.InstanceDescription, error) {
+			return &alibabaClient.InstanceDescription{InstanceID: id, Status: string(infrav1.InstanceStateStopping)}, nil
+		},
+		DeleteECSInstanceFn: func(id string, force bool) error { deleteCalls++; return nil },
+	}
+	r := &AlibabaCloudMachineReconciler{AlibabaCloudClientBuilder: fakeBuilder(fakeECS)}
+	m := machineWithInstance("i-stopping")
+
+	res, err := r.reconcileDelete(context.Background(), m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deleteCalls != 0 {
+		t.Errorf("must not re-issue delete against a Stopping instance, got %d calls", deleteCalls)
+	}
+	if res.RequeueAfter == 0 {
+		t.Error("should requeue while instance is terminating")
+	}
+	if !controllerutil.ContainsFinalizer(m, infrav1.MachineFinalizer) {
+		t.Error("finalizer must remain until the instance is gone")
+	}
+}
+
+func TestReconcileDelete_Gone_RemovesFinalizer(t *testing.T) {
+	deleteCalls := 0
+	fakeECS := &fakeclient.FakeClient{
+		DescribeInstanceByIDFn: func(id string) (*alibabaClient.InstanceDescription, error) {
+			return nil, nil // instance no longer exists
+		},
+		DeleteECSInstanceFn: func(id string, force bool) error { deleteCalls++; return nil },
+	}
+	r := &AlibabaCloudMachineReconciler{AlibabaCloudClientBuilder: fakeBuilder(fakeECS)}
+	m := machineWithInstance("i-gone")
+
+	res, err := r.reconcileDelete(context.Background(), m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("should not requeue once the instance is gone, got %v", res.RequeueAfter)
+	}
+	if deleteCalls != 0 {
+		t.Errorf("should not call delete when the instance is already gone, got %d", deleteCalls)
+	}
+	if controllerutil.ContainsFinalizer(m, infrav1.MachineFinalizer) {
+		t.Error("finalizer should be removed once the instance is confirmed gone")
+	}
+}
+
+// ── reconcileNormal — terminal failure recording (#27) ──────────────────────────
+
+func readyClusterMachine() (*clusterv1.Machine, *infrav1.AlibabaCloudCluster) {
+	machine := &clusterv1.Machine{
+		Spec: clusterv1.MachineSpec{
+			Bootstrap: clusterv1.Bootstrap{DataSecretName: ptr("boot")},
+		},
+	}
+	cluster := &infrav1.AlibabaCloudCluster{
+		Status: infrav1.AlibabaCloudClusterStatus{Ready: true},
+	}
+	return machine, cluster
+}
+
+func TestReconcileNormal_TerminalError_SetsFailureReason(t *testing.T) {
+	fakeECS := &fakeclient.FakeClient{
+		DescribeInstanceByIDFn: func(id string) (*alibabaClient.InstanceDescription, error) {
+			return &alibabaClient.InstanceDescription{InstanceID: id, Status: string(infrav1.InstanceStateDeleted)}, nil
+		},
+	}
+	r := &AlibabaCloudMachineReconciler{AlibabaCloudClientBuilder: fakeBuilder(fakeECS)}
+	id := "i-term"
+	aliMachine := &infrav1.AlibabaCloudMachine{
+		Spec:   infrav1.AlibabaCloudMachineSpec{RegionID: "cn-hangzhou"},
+		Status: infrav1.AlibabaCloudMachineStatus{InstanceID: &id},
+	}
+	machine, cluster := readyClusterMachine()
+
+	res, err := r.reconcileNormal(context.Background(), machine, cluster, aliMachine)
+	if err != nil {
+		t.Fatalf("terminal failure should be swallowed (no requeue/err), got %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Errorf("terminal failure must not requeue, got RequeueAfter=%v", res.RequeueAfter)
+	}
+	if aliMachine.Status.FailureReason == nil || *aliMachine.Status.FailureReason != "InstanceTerminalState" {
+		t.Errorf("FailureReason = %v, want InstanceTerminalState", aliMachine.Status.FailureReason)
+	}
+	if aliMachine.Status.FailureMessage == nil || *aliMachine.Status.FailureMessage == "" {
+		t.Error("FailureMessage should be populated on terminal failure")
+	}
+	if aliMachine.Status.Ready {
+		t.Error("Ready must be false on terminal failure")
+	}
+}
+
+func TestReconcileNormal_TransientError_NoFailureReason(t *testing.T) {
+	fakeECS := &fakeclient.FakeClient{
+		DescribeInstanceByIDFn: func(id string) (*alibabaClient.InstanceDescription, error) {
+			return nil, fmt.Errorf("ECS API throttled") // transient, retryable
+		},
+	}
+	r := &AlibabaCloudMachineReconciler{AlibabaCloudClientBuilder: fakeBuilder(fakeECS)}
+	id := "i-transient"
+	aliMachine := &infrav1.AlibabaCloudMachine{
+		Spec:   infrav1.AlibabaCloudMachineSpec{RegionID: "cn-hangzhou"},
+		Status: infrav1.AlibabaCloudMachineStatus{InstanceID: &id},
+	}
+	machine, cluster := readyClusterMachine()
+
+	if _, err := r.reconcileNormal(context.Background(), machine, cluster, aliMachine); err == nil {
+		t.Fatal("transient error must propagate so it is retried with backoff")
+	}
+	if aliMachine.Status.FailureReason != nil {
+		t.Errorf("transient error must NOT set FailureReason, got %v", *aliMachine.Status.FailureReason)
 	}
 }

@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -178,6 +179,17 @@ func (r *AlibabaCloudMachineReconciler) reconcileNormal(
 
 	instance, err := r.findOrCreateInstance(ctx, alibabaSDKClient, machine, alibabaCluster, alibabaCloudMachine)
 	if err != nil {
+		// Terminal failures (instance vanished, instance entered a terminal
+		// ECS state) are non-recoverable: record FailureReason/FailureMessage
+		// per the CAPI contract and stop requeueing — retrying cannot make
+		// progress, and the Machine controller will remediate.
+		var termErr *terminalError
+		if errors.As(err, &termErr) {
+			r.setFailed(alibabaCloudMachine, termErr.reason, termErr.message)
+			log.Error(err, "terminal failure provisioning AlibabaCloudMachine",
+				"instanceID", ptrStr(alibabaCloudMachine.Status.InstanceID))
+			return ctrl.Result{}, nil
+		}
 		conditions.Set(alibabaCloudMachine, metav1.Condition{
 			Type:    clusterv1.ReadyCondition,
 			Status:  metav1.ConditionFalse,
@@ -204,22 +216,59 @@ func (r *AlibabaCloudMachineReconciler) reconcileDelete(ctx context.Context, ali
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Reconciling AlibabaCloudMachine delete")
 
-	if alibabaCloudMachine.Status.InstanceID != nil {
-		region, err := regionFromMachine(alibabaCloudMachine)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("cannot determine region for deletion: %w", err)
-		}
-		alibabaSDKClient, err := r.AlibabaCloudClientBuilder(r.Client, region)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("failed to create Alibaba Cloud client: %w", err)
-		}
+	// Nothing was ever provisioned — drop the finalizer immediately.
+	if alibabaCloudMachine.Status.InstanceID == nil {
+		controllerutil.RemoveFinalizer(alibabaCloudMachine, infrav1.MachineFinalizer)
+		return ctrl.Result{}, nil
+	}
+
+	region, err := regionFromMachine(alibabaCloudMachine)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("cannot determine region for deletion: %w", err)
+	}
+	alibabaSDKClient, err := r.AlibabaCloudClientBuilder(r.Client, region)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("failed to create Alibaba Cloud client: %w", err)
+	}
+
+	instanceID := *alibabaCloudMachine.Status.InstanceID
+
+	// CAPI contract: the infrastructure must be actually gone before we drop the
+	// finalizer, otherwise the owning Machine (and Node) is reported deleted
+	// while a billable ECS instance lives on.  Poll DescribeInstance and only
+	// release the finalizer once the instance no longer exists.
+	info, err := r.describeInstance(ctx, alibabaSDKClient, instanceID)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if info == nil {
+		log.Info("ECS instance is gone, removing finalizer", "instanceID", instanceID)
+		controllerutil.RemoveFinalizer(alibabaCloudMachine, infrav1.MachineFinalizer)
+		return ctrl.Result{}, nil
+	}
+
+	// Still present.  Surface progress on the Ready condition and keep the
+	// instance state in status for observability.
+	alibabaCloudMachine.Status.InstanceState = &info.State
+	conditions.Set(alibabaCloudMachine, metav1.Condition{
+		Type:    clusterv1.ReadyCondition,
+		Status:  metav1.ConditionFalse,
+		Reason:  "Deleting",
+		Message: fmt.Sprintf("ECS instance %s is %q; waiting for termination", instanceID, info.State),
+	})
+
+	// Issue the (force) delete only while the instance is not already on its way
+	// down; re-issuing against a Stopping/Stopped instance just generates
+	// IncorrectInstanceStatus noise.  Then requeue to poll until it disappears.
+	switch info.State {
+	case infrav1.InstanceStateStopping, infrav1.InstanceStateStopped, infrav1.InstanceStateDeleted:
+		log.Info("ECS instance is terminating, waiting", "instanceID", instanceID, "state", info.State)
+	default:
 		if err := r.deleteInstance(ctx, alibabaSDKClient, alibabaCloudMachine); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-
-	controllerutil.RemoveFinalizer(alibabaCloudMachine, infrav1.MachineFinalizer)
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
 // resolveRegion returns the effective region for a machine: the explicit
@@ -291,8 +340,9 @@ func (r *AlibabaCloudMachineReconciler) findOrCreateInstance(
 			return nil, err
 		}
 		if info == nil {
-			// Instance disappeared — treat as terminal error so CAPI can remediate.
-			return nil, fmt.Errorf("ECS instance %s no longer exists", instanceID)
+			// Instance disappeared — terminal: CAPI must remediate (replace it).
+			return nil, newTerminalError("InstanceDisappeared",
+				fmt.Sprintf("ECS instance %s no longer exists", instanceID))
 		}
 
 		// Always sync addresses and state into status regardless of current state.
@@ -303,7 +353,8 @@ func (r *AlibabaCloudMachineReconciler) findOrCreateInstance(
 			log.Info("ECS instance is Running", "instanceID", instanceID)
 			return info, nil
 		case infrav1.InstanceStateDeleted, infrav1.InstanceStateStopped:
-			return nil, fmt.Errorf("ECS instance %s is in terminal state %q", instanceID, info.State)
+			return nil, newTerminalError("InstanceTerminalState",
+				fmt.Sprintf("ECS instance %s is in terminal state %q", instanceID, info.State))
 		default:
 			// Pending / Starting / Stopping — keep waiting.
 			log.Info("ECS instance not yet Running, requeueing", "instanceID", instanceID, "state", info.State)
@@ -404,6 +455,47 @@ func (r *AlibabaCloudMachineReconciler) deleteInstance(ctx context.Context, c al
 	}
 	log.Info("ECS instance deleted", "instanceID", instanceID)
 	return nil
+}
+
+// terminalError marks a non-recoverable reconcile condition.  When
+// reconcileNormal unwraps one (via errors.As) it records
+// Status.FailureReason/FailureMessage — the CAPI terminal-failure contract —
+// and stops requeueing, because retrying cannot make progress.  The owning
+// Machine controller observes the failure and remediates (e.g. replaces the
+// Machine).  Only genuinely unrecoverable conditions should use this; transient
+// API/SDK errors must stay plain errors so they are retried with backoff.
+type terminalError struct {
+	reason  string
+	message string
+}
+
+func (e *terminalError) Error() string { return e.message }
+
+func newTerminalError(reason, message string) *terminalError {
+	return &terminalError{reason: reason, message: message}
+}
+
+// setFailed records a terminal failure on the machine status per the CAPI
+// contract: FailureReason (machine-readable) + FailureMessage (human-readable),
+// Ready=false, and a matching Ready condition.
+func (r *AlibabaCloudMachineReconciler) setFailed(m *infrav1.AlibabaCloudMachine, reason, message string) {
+	m.Status.FailureReason = &reason
+	m.Status.FailureMessage = &message
+	m.Status.Ready = false
+	conditions.Set(m, metav1.Condition{
+		Type:    clusterv1.ReadyCondition,
+		Status:  metav1.ConditionFalse,
+		Reason:  reason,
+		Message: message,
+	})
+}
+
+// ptrStr safely dereferences a *string for logging.
+func ptrStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func (r *AlibabaCloudMachineReconciler) syncInstanceStatus(m *infrav1.AlibabaCloudMachine, info *instanceInfo) *instanceInfo {
