@@ -63,6 +63,29 @@ func (r *AlibabaCloudMachineReconciler) Reconcile(ctx context.Context, req ctrl.
 		return ctrl.Result{}, err
 	}
 
+	patchHelper, err := patch.NewHelper(alibabaCloudMachine, r.Client)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	defer func() {
+		if err := patchHelper.Patch(ctx, alibabaCloudMachine,
+			patch.WithOwnedConditions{Conditions: []string{clusterv1.ReadyCondition}},
+		); err != nil && reterr == nil {
+			reterr = err
+		}
+	}()
+
+	// P3-CAPA.11: deletion is self-contained — reconcileDelete needs only the
+	// AlibabaCloudMachine itself (Status.InstanceID + region from Spec/
+	// providerID), not the owner Machine or Cluster.  Handle it BEFORE those
+	// lookups so the finalizer can always be removed.  Otherwise, if the owning
+	// Machine was already deleted, GetOwnerMachine errors and we never reach
+	// reconcileDelete — leaving the AlibabaCloudMachine (and its ECS) orphaned
+	// with a stuck finalizer (observed 2026-06-06 in the PR2 delete smoke).
+	if !alibabaCloudMachine.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, alibabaCloudMachine)
+	}
+
 	machine, err := util.GetOwnerMachine(ctx, r.Client, alibabaCloudMachine.ObjectMeta)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -93,22 +116,6 @@ func (r *AlibabaCloudMachineReconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 	if err := r.Get(ctx, infraRef, alibabaCluster); err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to get AlibabaCloudCluster: %w", err)
-	}
-
-	patchHelper, err := patch.NewHelper(alibabaCloudMachine, r.Client)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	defer func() {
-		if err := patchHelper.Patch(ctx, alibabaCloudMachine,
-			patch.WithOwnedConditions{Conditions: []string{clusterv1.ReadyCondition}},
-		); err != nil && reterr == nil {
-			reterr = err
-		}
-	}()
-
-	if !alibabaCloudMachine.DeletionTimestamp.IsZero() {
-		return r.reconcileDelete(ctx, alibabaCloudMachine)
 	}
 
 	return r.reconcileNormal(ctx, machine, alibabaCluster, alibabaCloudMachine)

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -607,6 +608,43 @@ func TestReconcileNormal_TerminalError_SetsFailureReason(t *testing.T) {
 	}
 	if aliMachine.Status.Ready {
 		t.Error("Ready must be false on terminal failure")
+	}
+}
+
+// P3-CAPA.11: a deleting AlibabaCloudMachine whose owner Machine is already
+// gone must still reach reconcileDelete and release its finalizer (Reconcile
+// must not bail in GetOwnerMachine on the delete path).
+func TestReconcile_DeleteWithoutOwnerMachine_RemovesFinalizer(t *testing.T) {
+	scheme := newTestScheme(t)
+	now := metav1.Now()
+	id := "i-orphan"
+	acm := &infrav1.AlibabaCloudMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:         "default",
+			Name:              "orphan",
+			Finalizers:        []string{infrav1.MachineFinalizer},
+			DeletionTimestamp: &now,
+		},
+		Spec:   infrav1.AlibabaCloudMachineSpec{RegionID: "cn-hangzhou"},
+		Status: infrav1.AlibabaCloudMachineStatus{InstanceID: &id},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(acm).Build()
+	// ECS already gone → reconcileDelete confirms termination and drops finalizer.
+	fakeECS := &fakeclient.FakeClient{
+		DescribeInstanceByIDFn: func(string) (*alibabaClient.InstanceDescription, error) { return nil, nil },
+	}
+	r := &AlibabaCloudMachineReconciler{Client: k8sClient, Scheme: scheme, AlibabaCloudClientBuilder: fakeBuilder(fakeECS)}
+
+	_, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "orphan"},
+	})
+	if err != nil {
+		t.Fatalf("delete reconcile must not error when owner Machine is absent: %v", err)
+	}
+	got := &infrav1.AlibabaCloudMachine{}
+	gerr := k8sClient.Get(context.Background(), runtimeclient.ObjectKey{Namespace: "default", Name: "orphan"}, got)
+	if !apierrors.IsNotFound(gerr) {
+		t.Fatalf("expected object gone after finalizer removal; get err=%v finalizers=%v", gerr, got.Finalizers)
 	}
 }
 
