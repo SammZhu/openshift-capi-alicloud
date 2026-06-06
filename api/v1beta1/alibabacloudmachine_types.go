@@ -23,9 +23,12 @@ type AlibabaCloudMachineSpec struct {
 	// +kubebuilder:validation:Required
 	InstanceType string `json:"instanceType"`
 
-	// ImageID is the ID of the ECS image to use for the instance.
-	// +kubebuilder:validation:Required
-	ImageID string `json:"imageID"`
+	// ImageID is the ID of the ECS image to use for the instance. When empty, the
+	// owning AlibabaCloudCluster's spec.bootImageID is used instead (the cluster
+	// RHCOS/discovery boot image). At least one of the two must be set, otherwise
+	// provisioning fails with a terminal NoBootImage error.
+	// +optional
+	ImageID string `json:"imageID,omitempty"`
 
 	// RegionID is the Alibaba Cloud region. Defaults to the cluster region.
 	// +optional

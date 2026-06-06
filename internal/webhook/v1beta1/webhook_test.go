@@ -90,7 +90,9 @@ func TestMachineValidateCreate(t *testing.T) {
 		{"gpu instance type", func(m *infrav1.AlibabaCloudMachine) { m.Spec.InstanceType = "ecs.gn7i-c8g1.2xlarge" }, false},
 		{"empty instanceType", func(m *infrav1.AlibabaCloudMachine) { m.Spec.InstanceType = "" }, true},
 		{"bad instanceType prefix", func(m *infrav1.AlibabaCloudMachine) { m.Spec.InstanceType = "g7.large" }, true},
-		{"empty imageID", func(m *infrav1.AlibabaCloudMachine) { m.Spec.ImageID = "" }, true},
+		// imageID may be omitted — it falls back to the cluster's bootImageID,
+		// resolved by the controller (not visible to the webhook).
+		{"empty imageID allowed", func(m *infrav1.AlibabaCloudMachine) { m.Spec.ImageID = "" }, false},
 		{"system disk too small", func(m *infrav1.AlibabaCloudMachine) { m.Spec.SystemDisk.Size = 10 }, true},
 		{"data disk too small", func(m *infrav1.AlibabaCloudMachine) {
 			m.Spec.DataDisks = []infrav1.DataDisk{{Category: "cloud_essd", Size: 10}}

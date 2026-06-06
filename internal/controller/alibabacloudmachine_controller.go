@@ -439,6 +439,20 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 		diskKMSKeyID = sd.KMSKeyID
 	}
 
+	// Resolve the boot image: an explicit machine imageID wins, otherwise fall
+	// back to the cluster's bootImageID (the imported RHCOS/discovery image that
+	// lets the node join THIS cluster). With neither set there is nothing to boot
+	// — that's a terminal misconfiguration, so the MachineSet can remediate
+	// rather than the controller hot-looping.
+	imageID := alibabaCloudMachine.Spec.ImageID
+	if imageID == "" {
+		imageID = alibabaCluster.Spec.BootImageID
+	}
+	if imageID == "" {
+		return newTerminalError("NoBootImage",
+			"spec.imageID is empty and the cluster has no spec.bootImageID to fall back to")
+	}
+
 	// Region resolves to the cluster's region when the machine omits it.
 	// Both RunInstances and the providerID must use this resolved value —
 	// never Spec.RegionID directly (it is usually empty; see resolveRegion).
@@ -448,7 +462,7 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 		RegionID:                   region,
 		ZoneID:                     alibabaCloudMachine.Spec.ZoneID,
 		InstanceType:               alibabaCloudMachine.Spec.InstanceType,
-		ImageID:                    alibabaCloudMachine.Spec.ImageID,
+		ImageID:                    imageID,
 		SecurityGroupIDs:           alibabaCloudMachine.Spec.SecurityGroupIDs,
 		VSwitchID:                  alibabaCloudMachine.Spec.VSwitchID,
 		SystemDiskCategory:         diskCategory,

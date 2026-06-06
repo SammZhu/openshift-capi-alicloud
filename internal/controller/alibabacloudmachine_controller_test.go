@@ -749,3 +749,53 @@ func TestClassifyCreateError(t *testing.T) {
 		})
 	}
 }
+
+// ── createInstance image resolution (P3-CAPA.16: cluster bootImageID fallback) ─
+
+func TestCreateInstance_FallsBackToClusterBootImage(t *testing.T) {
+	var gotImage string
+	fakeECS := &fakeclient.FakeClient{
+		CreateECSInstanceFn: func(p alibabaClient.CreateInstanceParams) (*alibabaClient.CreateInstanceResponse, error) {
+			gotImage = p.ImageID
+			return &alibabaClient.CreateInstanceResponse{InstanceID: "i-1"}, nil
+		},
+	}
+	r := &AlibabaCloudMachineReconciler{}
+	cluster := &infrav1.AlibabaCloudCluster{Spec: infrav1.AlibabaCloudClusterSpec{Region: "cn-x", BootImageID: "m-boot"}}
+	m := &infrav1.AlibabaCloudMachine{Spec: infrav1.AlibabaCloudMachineSpec{InstanceType: "ecs.g7.large"}}
+	if err := r.createInstance(context.Background(), fakeECS, &clusterv1.Machine{}, cluster, m); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotImage != "m-boot" {
+		t.Errorf("ImageID = %q, want m-boot (cluster bootImageID fallback)", gotImage)
+	}
+}
+
+func TestCreateInstance_ExplicitImageWins(t *testing.T) {
+	var gotImage string
+	fakeECS := &fakeclient.FakeClient{
+		CreateECSInstanceFn: func(p alibabaClient.CreateInstanceParams) (*alibabaClient.CreateInstanceResponse, error) {
+			gotImage = p.ImageID
+			return &alibabaClient.CreateInstanceResponse{InstanceID: "i-1"}, nil
+		},
+	}
+	r := &AlibabaCloudMachineReconciler{}
+	cluster := &infrav1.AlibabaCloudCluster{Spec: infrav1.AlibabaCloudClusterSpec{Region: "cn-x", BootImageID: "m-boot"}}
+	m := &infrav1.AlibabaCloudMachine{Spec: infrav1.AlibabaCloudMachineSpec{InstanceType: "ecs.g7.large", ImageID: "m-explicit"}}
+	if err := r.createInstance(context.Background(), fakeECS, &clusterv1.Machine{}, cluster, m); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotImage != "m-explicit" {
+		t.Errorf("ImageID = %q, want m-explicit (machine imageID wins)", gotImage)
+	}
+}
+
+func TestCreateInstance_NoBootImageIsTerminal(t *testing.T) {
+	r := &AlibabaCloudMachineReconciler{}
+	m := &infrav1.AlibabaCloudMachine{Spec: infrav1.AlibabaCloudMachineSpec{InstanceType: "ecs.g7.large"}}
+	err := r.createInstance(context.Background(), &fakeclient.FakeClient{}, &clusterv1.Machine{}, &infrav1.AlibabaCloudCluster{}, m)
+	var termErr *terminalError
+	if !errors.As(err, &termErr) || termErr.reason != "NoBootImage" {
+		t.Fatalf("expected NoBootImage terminal error, got %v", err)
+	}
+}

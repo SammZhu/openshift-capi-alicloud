@@ -145,9 +145,10 @@ func validateMachineSpec(m *infrav1.AlibabaCloudMachine) field.ErrorList {
 			"must be an Alibaba Cloud ECS instance type (e.g. ecs.g7.large)"))
 	}
 
-	if strings.TrimSpace(m.Spec.ImageID) == "" {
-		allErrs = append(allErrs, field.Required(spec.Child("imageID"), "imageID is required"))
-	}
+	// imageID is intentionally NOT required here: it may be resolved at reconcile
+	// time from the owning cluster's spec.bootImageID, which the webhook (seeing
+	// only the machine) cannot observe. The controller raises a terminal
+	// NoBootImage error when neither is set.
 
 	if d := m.Spec.SystemDisk; d != nil && d.Size != 0 && d.Size < minDiskSizeGiB {
 		allErrs = append(allErrs, field.Invalid(spec.Child("systemDisk", "size"), d.Size,

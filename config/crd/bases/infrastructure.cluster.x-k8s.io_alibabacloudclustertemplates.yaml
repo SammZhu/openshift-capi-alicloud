@@ -75,6 +75,16 @@ spec:
                           - value
                           type: object
                         type: array
+                      bootImageID:
+                        description: |-
+                          BootImageID is the Alibaba Cloud custom image used to boot worker nodes so
+                          they join THIS cluster. It is the imported OpenShift discovery/RHCOS image
+                          (the same ecs_image_id used to install the cluster, or a day-2 add-hosts
+                          infra-env image) and carries the embedded Ignition / infra-env config.
+                          AlibabaCloudMachines that omit spec.imageID fall back to this value, so a
+                          MachineDeployment template does not have to repeat it. Leaving both empty
+                          makes machine provisioning fail with a terminal NoBootImage error.
+                        type: string
                       controlPlaneEndpoint:
                         description: |-
                           ControlPlaneEndpoint represents the endpoint used to communicate with the

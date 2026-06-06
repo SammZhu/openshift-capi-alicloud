@@ -22,6 +22,16 @@ type AlibabaCloudClusterSpec struct {
 	// +optional
 	VpcID string `json:"vpcID,omitempty"`
 
+	// BootImageID is the Alibaba Cloud custom image used to boot worker nodes so
+	// they join THIS cluster. It is the imported OpenShift discovery/RHCOS image
+	// (the same ecs_image_id used to install the cluster, or a day-2 add-hosts
+	// infra-env image) and carries the embedded Ignition / infra-env config.
+	// AlibabaCloudMachines that omit spec.imageID fall back to this value, so a
+	// MachineDeployment template does not have to repeat it. Leaving both empty
+	// makes machine provisioning fail with a terminal NoBootImage error.
+	// +optional
+	BootImageID string `json:"bootImageID,omitempty"`
+
 	// ResourceGroupID is the ID of the resource group for all cluster resources.
 	// +optional
 	ResourceGroupID string `json:"resourceGroupID,omitempty"`
