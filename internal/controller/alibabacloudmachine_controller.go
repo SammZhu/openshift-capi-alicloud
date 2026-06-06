@@ -264,11 +264,22 @@ func (r *AlibabaCloudMachineReconciler) reconcileDelete(ctx context.Context, ali
 		Message: fmt.Sprintf("ECS instance %s is %q; waiting for termination", instanceID, info.State),
 	})
 
-	// Issue the (force) delete only while the instance is not already on its way
-	// down; re-issuing against a Stopping/Stopped instance just generates
-	// IncorrectInstanceStatus noise.  Then requeue to poll until it disappears.
+	// Issue the (force) delete unless the instance is genuinely leaving on its
+	// own.  Stopping is a transient state heading toward Stopped, and Deleted
+	// means the release is already committed and the record will vanish shortly —
+	// re-issuing DeleteInstance against either only yields IncorrectInstanceStatus
+	// noise, so we just requeue and poll.
+	//
+	// Stopped, by contrast, is a *stable* resting state on Alibaba Cloud: an
+	// instance that was force-stopped (or whose first force-delete only stopped
+	// it instead of releasing it) sits in Stopped indefinitely and never
+	// progresses to released on its own.  Stopped is also the canonical deletable
+	// state — DeleteInstance against a Stopped instance is exactly how it is
+	// released.  So Stopped MUST fall through to the delete branch; treating it as
+	// "already terminating" deadlocks the finalizer forever (the ECS is never
+	// freed and the owning Machine/Node hangs in Terminating).  See P3-CAPA.12.
 	switch info.State {
-	case infrav1.InstanceStateStopping, infrav1.InstanceStateStopped, infrav1.InstanceStateDeleted:
+	case infrav1.InstanceStateStopping, infrav1.InstanceStateDeleted:
 		log.Info("ECS instance is terminating, waiting", "instanceID", instanceID, "state", info.State)
 	default:
 		if err := r.deleteInstance(ctx, alibabaSDKClient, alibabaCloudMachine); err != nil {

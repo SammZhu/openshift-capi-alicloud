@@ -539,6 +539,43 @@ func TestReconcileDelete_Stopping_DoesNotReDelete(t *testing.T) {
 	}
 }
 
+// P3-CAPA.12: a Stopped instance is a stable resting state on Alibaba Cloud —
+// it never releases on its own. The controller MUST (re)issue the force delete
+// against it, otherwise the finalizer hangs forever. (Regression: previously
+// Stopped was lumped with Stopping/Deleted into the wait-only branch, which
+// deadlocked deletion for any machine whose ECS ended up Stopped.)
+func TestReconcileDelete_Stopped_IssuesDelete(t *testing.T) {
+	deleteCalls := 0
+	fakeECS := &fakeclient.FakeClient{
+		DescribeInstanceByIDFn: func(id string) (*alibabaClient.InstanceDescription, error) {
+			return &alibabaClient.InstanceDescription{InstanceID: id, Status: string(infrav1.InstanceStateStopped)}, nil
+		},
+		DeleteECSInstanceFn: func(id string, force bool) error {
+			deleteCalls++
+			if !force {
+				t.Error("delete should be forced")
+			}
+			return nil
+		},
+	}
+	r := &AlibabaCloudMachineReconciler{AlibabaCloudClientBuilder: fakeBuilder(fakeECS)}
+	m := machineWithInstance("i-stopped")
+
+	res, err := r.reconcileDelete(context.Background(), m)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if deleteCalls != 1 {
+		t.Errorf("expected exactly 1 delete call to release a Stopped instance, got %d", deleteCalls)
+	}
+	if res.RequeueAfter == 0 {
+		t.Error("should requeue to poll for termination")
+	}
+	if !controllerutil.ContainsFinalizer(m, infrav1.MachineFinalizer) {
+		t.Error("finalizer must NOT be removed while the instance still exists")
+	}
+}
+
 func TestReconcileDelete_Gone_RemovesFinalizer(t *testing.T) {
 	deleteCalls := 0
 	fakeECS := &fakeclient.FakeClient{
