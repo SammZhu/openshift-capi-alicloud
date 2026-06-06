@@ -3,9 +3,11 @@ package controller
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"testing"
 
+	sdkerrors "github.com/aliyun/alibaba-cloud-sdk-go/sdk/errors"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -704,5 +706,46 @@ func TestReconcileNormal_TransientError_NoFailureReason(t *testing.T) {
 	}
 	if aliMachine.Status.FailureReason != nil {
 		t.Errorf("transient error must NOT set FailureReason, got %v", *aliMachine.Status.FailureReason)
+	}
+}
+
+// ── classifyCreateError (FSD PR-B: capacity / spot terminal mapping) ─────────
+
+func serverErr(code string) error {
+	return sdkerrors.NewServerError(403, fmt.Sprintf(`{"Code":%q,"Message":"x"}`, code), "")
+}
+
+func TestClassifyCreateError(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantReason string // "" means NOT a terminalError (recoverable)
+	}{
+		{"zone capacity", serverErr("Invalid.Zone.NotEnoughResource"), "InstanceCapacityExhausted"},
+		{"insufficient capacity", serverErr("InsufficientCapacity"), "InstanceCapacityExhausted"},
+		{"no stock", serverErr("OperationDenied.NoStock"), "InstanceCapacityExhausted"},
+		{"spot strategy", serverErr("Invalid.SpotStrategy.NotSupported"), "SpotConfigurationRejected"},
+		{"spot price", serverErr("Invalid.SpotPriceLimit.Exceeded"), "SpotConfigurationRejected"},
+		{"throttling is recoverable", serverErr("Throttling"), ""},
+		{"plain error is recoverable", errors.New("dial tcp: timeout"), ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyCreateError(tc.err)
+			var termErr *terminalError
+			isTerminal := errors.As(got, &termErr)
+			if tc.wantReason == "" {
+				if isTerminal {
+					t.Fatalf("expected a recoverable error, got terminal %q", termErr.reason)
+				}
+				return
+			}
+			if !isTerminal {
+				t.Fatalf("expected terminal error %q, got %v", tc.wantReason, got)
+			}
+			if termErr.reason != tc.wantReason {
+				t.Errorf("reason = %q, want %q", termErr.reason, tc.wantReason)
+			}
+		})
 	}
 }

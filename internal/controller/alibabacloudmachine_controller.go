@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	sdkerrors "github.com/aliyun/alibaba-cloud-sdk-go/sdk/errors"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -443,7 +444,7 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 	// never Spec.RegionID directly (it is usually empty; see resolveRegion).
 	region := resolveRegion(alibabaCloudMachine, alibabaCluster)
 
-	resp, err := c.CreateECSInstance(alibabaClient.CreateInstanceParams{
+	resp, createErr := c.CreateECSInstance(alibabaClient.CreateInstanceParams{
 		RegionID:                   region,
 		ZoneID:                     alibabaCloudMachine.Spec.ZoneID,
 		InstanceType:               alibabaCloudMachine.Spec.InstanceType,
@@ -463,8 +464,8 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 		SpotStrategy:               alibabaCloudMachine.Spec.SpotStrategy,
 		SpotPriceLimit:             alibabaCloudMachine.Spec.SpotPriceLimit,
 	})
-	if err != nil {
-		return fmt.Errorf("failed to create ECS instance: %w", err)
+	if createErr != nil {
+		return classifyCreateError(createErr)
 	}
 
 	instanceID := resp.InstanceID
@@ -503,6 +504,40 @@ func (e *terminalError) Error() string { return e.message }
 
 func newTerminalError(reason, message string) *terminalError {
 	return &terminalError{reason: reason, message: message}
+}
+
+// alibabaErrorCode returns the Alibaba Cloud server-side error code carried by
+// err, or "" when err is not an SDK ServerError.
+func alibabaErrorCode(err error) string {
+	var srvErr *sdkerrors.ServerError
+	if errors.As(err, &srvErr) {
+		return srvErr.ErrorCode()
+	}
+	return ""
+}
+
+// classifyCreateError maps RunInstances failures to the right error kind:
+//
+//   - Capacity exhaustion in the target zone and a rejected spot configuration
+//     are NON-recoverable for this Machine — no amount of retrying makes a
+//     sold-out zone have stock, or an unsupported spot strategy supported. We
+//     surface them as terminal errors so reconcileNormal records
+//     FailureReason/FailureMessage and stops requeueing; the owning MachineSet
+//     then remediates (deletes the Machine and recreates it in another
+//     FailureDomain / VSwitch).
+//   - Everything else (throttling, transient API/network errors) stays a plain
+//     wrapped error so controller-runtime retries it with exponential backoff.
+//     Do NOT add a custom retry/sleep loop here — the manager already backs off.
+func classifyCreateError(err error) error {
+	switch alibabaErrorCode(err) {
+	case "Invalid.Zone.NotEnoughResource", "InsufficientCapacity", "OperationDenied.NoStock":
+		return newTerminalError("InstanceCapacityExhausted", "Instance capacity exhausted in current zone")
+	case "Invalid.SpotStrategy.NotSupported", "Invalid.SpotPriceLimit.Exceeded":
+		return newTerminalError("SpotConfigurationRejected",
+			fmt.Sprintf("spot configuration rejected by Alibaba Cloud: %s", alibabaErrorCode(err)))
+	default:
+		return fmt.Errorf("failed to create ECS instance: %w", err)
+	}
 }
 
 // setFailed records a terminal failure on the machine status per the CAPI
