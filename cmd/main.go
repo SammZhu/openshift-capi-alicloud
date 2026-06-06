@@ -32,6 +32,7 @@ import (
 
 	infrav1 "github.com/SammZhu/openshift-capi-alicloud/api/v1beta1"
 	infracontroller "github.com/SammZhu/openshift-capi-alicloud/internal/controller"
+	infrawebhook "github.com/SammZhu/openshift-capi-alicloud/internal/webhook/v1beta1"
 	alibabaClient "github.com/SammZhu/openshift-capi-alicloud/pkg/client"
 	"github.com/SammZhu/openshift-capi-alicloud/pkg/version"
 )
@@ -52,6 +53,7 @@ func main() {
 		enableLeaderElection bool
 		healthAddr           string
 		concurrency          int
+		enableWebhooks       bool
 	)
 
 	klog.InitFlags(nil)
@@ -59,6 +61,7 @@ func main() {
 	flag.StringVar(&healthAddr, "health-probe-bind-address", ":9440", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
 	flag.IntVar(&concurrency, "concurrency", 1, "Number of resources to process simultaneously.")
+	flag.BoolVar(&enableWebhooks, "enable-webhooks", true, "Enable the admission webhooks. Requires serving certs mounted at the webhook server cert dir; disable for local runs without certs.")
 	flag.Parse()
 
 	ctrl.SetLogger(klogr.New())
@@ -97,6 +100,17 @@ func main() {
 	}).SetupWithManager(ctx, mgr, controller.Options{MaxConcurrentReconciles: concurrency}); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AlibabaCloudMachine")
 		os.Exit(1)
+	}
+
+	if enableWebhooks {
+		if err = (&infrawebhook.AlibabaCloudMachineWebhook{}).SetupWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "AlibabaCloudMachine")
+			os.Exit(1)
+		}
+		if err = (&infrawebhook.AlibabaCloudClusterWebhook{}).SetupWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "AlibabaCloudCluster")
+			os.Exit(1)
+		}
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
