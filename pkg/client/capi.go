@@ -3,10 +3,12 @@ package client
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk"
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth"
 	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/auth/credentials"
+	"github.com/aliyun/alibaba-cloud-sdk-go/sdk/requests"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/ecs"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/resourcemanager"
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/slb"
@@ -21,20 +23,39 @@ type Tag struct {
 	Value string
 }
 
+// DataDiskParam describes an additional data disk to attach at instance creation.
+type DataDiskParam struct {
+	Category         string
+	Size             int
+	PerformanceLevel string
+	Encrypted        *bool
+	KMSKeyID         string
+}
+
 // CreateInstanceParams holds the parameters for creating an ECS instance via CAPI.
 type CreateInstanceParams struct {
-	RegionID           string
-	ZoneID             string
-	InstanceType       string
-	ImageID            string
-	SecurityGroupIDs   []string
-	VSwitchID          string
-	SystemDiskCategory string
-	SystemDiskSize     int
-	RAMRoleName        string
-	UserData           string
-	Tags               []Tag
-	ResourceGroupID    string
+	RegionID                   string
+	ZoneID                     string
+	InstanceType               string
+	ImageID                    string
+	SecurityGroupIDs           []string
+	VSwitchID                  string
+	SystemDiskCategory         string
+	SystemDiskSize             int
+	SystemDiskPerformanceLevel string
+	SystemDiskEncrypted        *bool
+	SystemDiskKMSKeyID         string
+	DataDisks                  []DataDiskParam
+	RAMRoleName                string
+	UserData                   string
+	Tags                       []Tag
+	ResourceGroupID            string
+	// SpotStrategy is one of NoSpot / SpotWithPriceLimit / SpotAsPriceGo. Empty
+	// means a regular pay-as-you-go instance.
+	SpotStrategy string
+	// SpotPriceLimit is the hourly price ceiling; only used with
+	// SpotWithPriceLimit.
+	SpotPriceLimit *float64
 }
 
 // CreateInstanceResponse is the normalised response from CreateECSInstance.
@@ -213,15 +234,50 @@ func (c *alibabacloudClient) CreateECSInstance(params CreateInstanceParams) (*Cr
 	req.VSwitchId = params.VSwitchID
 	req.SystemDiskCategory = params.SystemDiskCategory
 	req.SystemDiskSize = fmt.Sprintf("%d", params.SystemDiskSize)
+	req.SystemDiskPerformanceLevel = params.SystemDiskPerformanceLevel
 	req.RamRoleName = params.RAMRoleName
 	req.UserData = params.UserData
 	req.ResourceGroupId = params.ResourceGroupID
 	req.Amount = "1"
 
+	// System-disk encryption + KMS key are not typed fields on RunInstancesRequest
+	// in this SDK version (only SystemDisk.PerformanceLevel is). Inject them as raw
+	// query params — InitParams merges struct-tag fields into this same map at call
+	// time without clobbering manually-set entries.
+	if params.SystemDiskEncrypted != nil && *params.SystemDiskEncrypted {
+		req.GetQueryParams()["SystemDisk.Encrypted"] = "true"
+		if params.SystemDiskKMSKeyID != "" {
+			req.GetQueryParams()["SystemDisk.KMSKeyId"] = params.SystemDiskKMSKeyID
+		}
+	}
+
+	if params.SpotStrategy != "" {
+		req.SpotStrategy = params.SpotStrategy
+	}
+	if params.SpotPriceLimit != nil {
+		req.SpotPriceLimit = requests.NewFloat(*params.SpotPriceLimit)
+	}
+
 	if len(params.SecurityGroupIDs) > 0 {
 		ids := make([]string, len(params.SecurityGroupIDs))
 		copy(ids, params.SecurityGroupIDs)
 		req.SecurityGroupIds = &ids
+	}
+
+	if len(params.DataDisks) > 0 {
+		disks := make([]ecs.RunInstancesDataDisk, len(params.DataDisks))
+		for i, d := range params.DataDisks {
+			disks[i] = ecs.RunInstancesDataDisk{
+				Category:         d.Category,
+				Size:             fmt.Sprintf("%d", d.Size),
+				PerformanceLevel: d.PerformanceLevel,
+				KMSKeyId:         d.KMSKeyID,
+			}
+			if d.Encrypted != nil {
+				disks[i].Encrypted = strconv.FormatBool(*d.Encrypted)
+			}
+		}
+		req.DataDisk = &disks
 	}
 
 	tags := make([]ecs.RunInstancesTag, len(params.Tags))

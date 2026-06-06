@@ -55,6 +55,21 @@ type AlibabaCloudMachineSpec struct {
 	// +optional
 	RAMRoleName string `json:"ramRoleName,omitempty"`
 
+	// SpotStrategy is the spot-instance bidding strategy:
+	//   - NoSpot (or empty): regular pay-as-you-go instance.
+	//   - SpotWithPriceLimit: spot instance with a user-set hourly price ceiling
+	//     (SpotPriceLimit is required).
+	//   - SpotAsPriceGo: spot instance priced at the current market rate.
+	// +kubebuilder:validation:Enum=NoSpot;SpotWithPriceLimit;SpotAsPriceGo
+	// +optional
+	SpotStrategy string `json:"spotStrategy,omitempty"`
+
+	// SpotPriceLimit is the maximum hourly price (in the region's currency) for a
+	// spot instance. Required when SpotStrategy is SpotWithPriceLimit; ignored
+	// otherwise.
+	// +optional
+	SpotPriceLimit *float64 `json:"spotPriceLimit,omitempty"`
+
 	// Tags are additional tags to apply to the ECS instance.
 	// +optional
 	Tags []Tag `json:"tags,omitempty"`

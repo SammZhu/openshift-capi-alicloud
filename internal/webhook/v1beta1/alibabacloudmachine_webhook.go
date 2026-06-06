@@ -161,7 +161,53 @@ func validateMachineSpec(m *infrav1.AlibabaCloudMachine) field.ErrorList {
 		}
 	}
 
+	if d := m.Spec.SystemDisk; d != nil {
+		allErrs = append(allErrs, validateDiskExtras(d.Category, d.PerformanceLevel, d.Encrypted, d.KMSKeyID, spec.Child("systemDisk"))...)
+	}
+	for i, d := range m.Spec.DataDisks {
+		allErrs = append(allErrs, validateDiskExtras(d.Category, d.PerformanceLevel, d.Encrypted, d.KMSKeyID, spec.Child("dataDisks").Index(i))...)
+	}
+
+	allErrs = append(allErrs, validateSpot(m, spec)...)
 	allErrs = append(allErrs, validateTags(m.Spec.Tags, spec.Child("tags"))...)
+	return allErrs
+}
+
+// validateSpot enforces the spotStrategy/spotPriceLimit relationship. Unknown
+// spotStrategy values are already rejected by the CRD enum.
+func validateSpot(m *infrav1.AlibabaCloudMachine, spec *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	plPath := spec.Child("spotPriceLimit")
+	if m.Spec.SpotStrategy == "SpotWithPriceLimit" {
+		switch {
+		case m.Spec.SpotPriceLimit == nil:
+			allErrs = append(allErrs, field.Required(plPath, "spotPriceLimit is required when spotStrategy is SpotWithPriceLimit"))
+		case *m.Spec.SpotPriceLimit <= 0:
+			allErrs = append(allErrs, field.Invalid(plPath, *m.Spec.SpotPriceLimit, "must be greater than 0"))
+		}
+		return allErrs
+	}
+	// Any non-SpotWithPriceLimit strategy (incl. empty/NoSpot/SpotAsPriceGo) must
+	// not carry a price limit — it would be silently ignored.
+	if m.Spec.SpotPriceLimit != nil {
+		allErrs = append(allErrs, field.Invalid(plPath, *m.Spec.SpotPriceLimit,
+			"spotPriceLimit is only allowed when spotStrategy is SpotWithPriceLimit"))
+	}
+	return allErrs
+}
+
+// validateDiskExtras checks the encryption + performance-level rules shared by
+// system and data disks.
+func validateDiskExtras(category, perfLevel string, encrypted *bool, kmsKeyID string, path *field.Path) field.ErrorList {
+	var allErrs field.ErrorList
+	if kmsKeyID != "" && (encrypted == nil || !*encrypted) {
+		allErrs = append(allErrs, field.Invalid(path.Child("kmsKeyID"), kmsKeyID,
+			"kmsKeyID requires encrypted=true"))
+	}
+	if perfLevel != "" && category != "cloud_essd" {
+		allErrs = append(allErrs, field.Invalid(path.Child("performanceLevel"), perfLevel,
+			"performanceLevel is only valid for the cloud_essd category"))
+	}
 	return allErrs
 }
 
@@ -180,6 +226,9 @@ func validateMachineImmutable(oldM, newM *infrav1.AlibabaCloudMachine) field.Err
 	immutable(spec.Child("zoneID"), oldM.Spec.ZoneID, newM.Spec.ZoneID)
 	immutable(spec.Child("vSwitchID"), oldM.Spec.VSwitchID, newM.Spec.VSwitchID)
 	immutable(spec.Child("systemDisk"), oldM.Spec.SystemDisk, newM.Spec.SystemDisk)
+	immutable(spec.Child("dataDisks"), oldM.Spec.DataDisks, newM.Spec.DataDisks)
+	immutable(spec.Child("spotStrategy"), oldM.Spec.SpotStrategy, newM.Spec.SpotStrategy)
+	immutable(spec.Child("spotPriceLimit"), oldM.Spec.SpotPriceLimit, newM.Spec.SpotPriceLimit)
 
 	// providerID is populated by the controller (nil -> value). Allow that
 	// one-time transition but forbid mutating or clearing an already-set value.

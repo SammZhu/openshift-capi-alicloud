@@ -427,9 +427,15 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 
 	diskCategory := "cloud_efficiency"
 	diskSize := 40
-	if alibabaCloudMachine.Spec.SystemDisk != nil {
-		diskCategory = alibabaCloudMachine.Spec.SystemDisk.Category
-		diskSize = alibabaCloudMachine.Spec.SystemDisk.Size
+	diskPerfLevel := ""
+	var diskEncrypted *bool
+	diskKMSKeyID := ""
+	if sd := alibabaCloudMachine.Spec.SystemDisk; sd != nil {
+		diskCategory = sd.Category
+		diskSize = sd.Size
+		diskPerfLevel = sd.PerformanceLevel
+		diskEncrypted = sd.Encrypted
+		diskKMSKeyID = sd.KMSKeyID
 	}
 
 	// Region resolves to the cluster's region when the machine omits it.
@@ -438,18 +444,24 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 	region := resolveRegion(alibabaCloudMachine, alibabaCluster)
 
 	resp, err := c.CreateECSInstance(alibabaClient.CreateInstanceParams{
-		RegionID:           region,
-		ZoneID:             alibabaCloudMachine.Spec.ZoneID,
-		InstanceType:       alibabaCloudMachine.Spec.InstanceType,
-		ImageID:            alibabaCloudMachine.Spec.ImageID,
-		SecurityGroupIDs:   alibabaCloudMachine.Spec.SecurityGroupIDs,
-		VSwitchID:          alibabaCloudMachine.Spec.VSwitchID,
-		SystemDiskCategory: diskCategory,
-		SystemDiskSize:     diskSize,
-		RAMRoleName:        alibabaCloudMachine.Spec.RAMRoleName,
-		UserData:           userData,
-		Tags:               toSDKTags(alibabaCloudMachine.Spec.Tags, machine.Name, alibabaCluster.Name),
-		ResourceGroupID:    alibabaCluster.Spec.ResourceGroupID,
+		RegionID:                   region,
+		ZoneID:                     alibabaCloudMachine.Spec.ZoneID,
+		InstanceType:               alibabaCloudMachine.Spec.InstanceType,
+		ImageID:                    alibabaCloudMachine.Spec.ImageID,
+		SecurityGroupIDs:           alibabaCloudMachine.Spec.SecurityGroupIDs,
+		VSwitchID:                  alibabaCloudMachine.Spec.VSwitchID,
+		SystemDiskCategory:         diskCategory,
+		SystemDiskSize:             diskSize,
+		SystemDiskPerformanceLevel: diskPerfLevel,
+		SystemDiskEncrypted:        diskEncrypted,
+		SystemDiskKMSKeyID:         diskKMSKeyID,
+		DataDisks:                  toSDKDataDisks(alibabaCloudMachine.Spec.DataDisks),
+		RAMRoleName:                alibabaCloudMachine.Spec.RAMRoleName,
+		UserData:                   userData,
+		Tags:                       toSDKTags(alibabaCloudMachine.Spec.Tags, machine.Name, alibabaCluster.Name),
+		ResourceGroupID:            alibabaCluster.Spec.ResourceGroupID,
+		SpotStrategy:               alibabaCloudMachine.Spec.SpotStrategy,
+		SpotPriceLimit:             alibabaCloudMachine.Spec.SpotPriceLimit,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create ECS instance: %w", err)
@@ -629,4 +641,22 @@ func toSDKTags(tags []infrav1.Tag, machineName, clusterName string) []alibabaCli
 		result = append(result, alibabaClient.Tag{Key: t.Key, Value: t.Value})
 	}
 	return result
+}
+
+// toSDKDataDisks maps the CRD data-disk specs to the client param type.
+func toSDKDataDisks(disks []infrav1.DataDisk) []alibabaClient.DataDiskParam {
+	if len(disks) == 0 {
+		return nil
+	}
+	out := make([]alibabaClient.DataDiskParam, len(disks))
+	for i, d := range disks {
+		out[i] = alibabaClient.DataDiskParam{
+			Category:         d.Category,
+			Size:             d.Size,
+			PerformanceLevel: d.PerformanceLevel,
+			Encrypted:        d.Encrypted,
+			KMSKeyID:         d.KMSKeyID,
+		}
+	}
+	return out
 }

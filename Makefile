@@ -52,7 +52,10 @@ push: image ## Build and push container image
 .PHONY: generate
 generate: controller-gen ## Regenerate DeepCopy and CRD manifests
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
-	$(CONTROLLER_GEN) crd paths="./api/..." output:crd:dir=config/crd/bases
+	# allowDangerousTypes: AlibabaCloudMachineSpec.spotPriceLimit is a *float64
+	# (Alibaba prices its spot ceiling as a float; the SDK's SpotPriceLimit is a
+	# float-backed string). controller-gen otherwise refuses to emit floats.
+	$(CONTROLLER_GEN) crd:allowDangerousTypes=true paths="./api/..." output:crd:dir=config/crd/bases
 	@echo "Generated DeepCopy and CRD manifests"
 
 .PHONY: controller-gen

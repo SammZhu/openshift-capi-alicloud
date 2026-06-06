@@ -25,7 +25,9 @@ import (
 	infrav1 "github.com/SammZhu/openshift-capi-alicloud/api/v1beta1"
 )
 
-func strPtr(s string) *string { return &s }
+func strPtr(s string) *string   { return &s }
+func boolPtr(b bool) *bool      { return &b }
+func f64Ptr(f float64) *float64 { return &f }
 
 func validMachine() *infrav1.AlibabaCloudMachine {
 	return &infrav1.AlibabaCloudMachine{
@@ -96,6 +98,45 @@ func TestMachineValidateCreate(t *testing.T) {
 		{"empty tag key", func(m *infrav1.AlibabaCloudMachine) {
 			m.Spec.Tags = []infrav1.Tag{{Key: "", Value: "1"}}
 		}, true},
+		// spot
+		{"spot price limit needs strategy", func(m *infrav1.AlibabaCloudMachine) {
+			m.Spec.SpotPriceLimit = f64Ptr(0.5)
+		}, true},
+		{"spot with-limit missing price", func(m *infrav1.AlibabaCloudMachine) {
+			m.Spec.SpotStrategy = "SpotWithPriceLimit"
+		}, true},
+		{"spot with-limit non-positive", func(m *infrav1.AlibabaCloudMachine) {
+			m.Spec.SpotStrategy = "SpotWithPriceLimit"
+			m.Spec.SpotPriceLimit = f64Ptr(0)
+		}, true},
+		{"spot with-limit valid", func(m *infrav1.AlibabaCloudMachine) {
+			m.Spec.SpotStrategy = "SpotWithPriceLimit"
+			m.Spec.SpotPriceLimit = f64Ptr(0.5)
+		}, false},
+		{"spot as-price-go no limit", func(m *infrav1.AlibabaCloudMachine) {
+			m.Spec.SpotStrategy = "SpotAsPriceGo"
+		}, false},
+		// disk encryption + performance level
+		{"kmsKeyID without encrypted", func(m *infrav1.AlibabaCloudMachine) {
+			m.Spec.SystemDisk.KMSKeyID = "key-1"
+		}, true},
+		{"encrypted with kms ok", func(m *infrav1.AlibabaCloudMachine) {
+			m.Spec.SystemDisk.Encrypted = boolPtr(true)
+			m.Spec.SystemDisk.KMSKeyID = "key-1"
+		}, false},
+		{"performanceLevel non-essd", func(m *infrav1.AlibabaCloudMachine) {
+			m.Spec.SystemDisk.Category = "cloud_ssd"
+			m.Spec.SystemDisk.PerformanceLevel = "PL1"
+		}, true},
+		{"performanceLevel essd ok", func(m *infrav1.AlibabaCloudMachine) {
+			m.Spec.SystemDisk.PerformanceLevel = "PL1"
+		}, false},
+		{"data disk kms without encrypted", func(m *infrav1.AlibabaCloudMachine) {
+			m.Spec.DataDisks = []infrav1.DataDisk{{Category: "cloud_essd", Size: 100, KMSKeyID: "key-1"}}
+		}, true},
+		{"data disk encrypted ok", func(m *infrav1.AlibabaCloudMachine) {
+			m.Spec.DataDisks = []infrav1.DataDisk{{Category: "cloud_essd", Size: 100, Encrypted: boolPtr(true), PerformanceLevel: "PL2"}}
+		}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -133,6 +174,12 @@ func TestMachineValidateUpdate(t *testing.T) {
 		{"providerID cleared", func(o, n *infrav1.AlibabaCloudMachine) {
 			o.Spec.ProviderID = strPtr("alicloud://cn-hangzhou/i-1")
 			n.Spec.ProviderID = nil
+		}, true},
+		{"change spotStrategy", func(o, n *infrav1.AlibabaCloudMachine) {
+			n.Spec.SpotStrategy = "SpotAsPriceGo"
+		}, true},
+		{"add dataDisks", func(o, n *infrav1.AlibabaCloudMachine) {
+			n.Spec.DataDisks = []infrav1.DataDisk{{Category: "cloud_essd", Size: 100}}
 		}, true},
 	}
 	for _, tc := range tests {

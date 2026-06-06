@@ -38,6 +38,19 @@ type SystemDisk struct {
 	// Size is the disk size in GiB.
 	// +kubebuilder:validation:Minimum=20
 	Size int `json:"size"`
+	// PerformanceLevel is the ESSD performance level. Only meaningful for the
+	// cloud_essd category; ignored otherwise.
+	// +kubebuilder:validation:Enum=PL0;PL1;PL2;PL3
+	// +optional
+	PerformanceLevel string `json:"performanceLevel,omitempty"`
+	// Encrypted enables server-side encryption of the disk.
+	// +optional
+	Encrypted *bool `json:"encrypted,omitempty"`
+	// KMSKeyID is the ID of the KMS key used to encrypt the disk. When Encrypted
+	// is true and KMSKeyID is empty, Alibaba Cloud's default EBS service key is
+	// used. Setting KMSKeyID without Encrypted=true is rejected by the webhook.
+	// +optional
+	KMSKeyID string `json:"kmsKeyID,omitempty"`
 }
 
 // DataDisk describes an additional data disk for an ECS instance.
@@ -51,6 +64,19 @@ type DataDisk struct {
 	// Name is an optional identifier for the data disk.
 	// +optional
 	Name string `json:"name,omitempty"`
+	// PerformanceLevel is the ESSD performance level. Only meaningful for the
+	// cloud_essd category; ignored otherwise.
+	// +kubebuilder:validation:Enum=PL0;PL1;PL2;PL3
+	// +optional
+	PerformanceLevel string `json:"performanceLevel,omitempty"`
+	// Encrypted enables server-side encryption of the disk.
+	// +optional
+	Encrypted *bool `json:"encrypted,omitempty"`
+	// KMSKeyID is the ID of the KMS key used to encrypt the disk. When Encrypted
+	// is true and KMSKeyID is empty, Alibaba Cloud's default EBS service key is
+	// used. Setting KMSKeyID without Encrypted=true is rejected by the webhook.
+	// +optional
+	KMSKeyID string `json:"kmsKeyID,omitempty"`
 }
 
 // FailureDomain maps an Alibaba Cloud availability zone to the VSwitch that
