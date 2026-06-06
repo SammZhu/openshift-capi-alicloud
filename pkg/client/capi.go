@@ -295,5 +295,51 @@ func (c *alibabacloudClient) CreateECSInstance(params CreateInstanceParams) (*Cr
 	}
 	instanceID := resp.InstanceIdSets.InstanceIdSet[0]
 	klog.Infof("Created ECS instance %s", instanceID)
+
+	// Propagate the instance tags to every disk created with the instance
+	// (system + data) for cost allocation. RunInstances tags only the instance,
+	// and RunInstancesDataDisk has no per-disk tag field, so we tag the disks
+	// after creation. This is best-effort: the instance already exists, so a
+	// tagging failure must not fail provisioning — log and continue.
+	if len(params.Tags) > 0 {
+		c.tagInstanceDisks(params.RegionID, instanceID, params.Tags)
+	}
 	return &CreateInstanceResponse{InstanceID: instanceID}, nil
+}
+
+// tagInstanceDisks applies tags to all disks attached to the given instance.
+// Best-effort: every failure is logged and swallowed.
+func (c *alibabacloudClient) tagInstanceDisks(region, instanceID string, tags []Tag) {
+	dreq := ecs.CreateDescribeDisksRequest()
+	dreq.RegionId = region
+	dreq.InstanceId = instanceID
+	dresp, err := c.ecsClient.DescribeDisks(dreq)
+	if err != nil {
+		klog.Warningf("tag disks: DescribeDisks(%s): %v", instanceID, err)
+		return
+	}
+	ids := make([]string, 0, len(dresp.Disks.Disk))
+	for _, d := range dresp.Disks.Disk {
+		if d.DiskId != "" {
+			ids = append(ids, d.DiskId)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+
+	treq := ecs.CreateTagResourcesRequest()
+	treq.RegionId = region
+	treq.ResourceType = "disk"
+	treq.ResourceId = &ids
+	ttags := make([]ecs.TagResourcesTag, len(tags))
+	for i, t := range tags {
+		ttags[i] = ecs.TagResourcesTag{Key: t.Key, Value: t.Value}
+	}
+	treq.Tag = &ttags
+	if _, err := c.ecsClient.TagResources(treq); err != nil {
+		klog.Warningf("tag disks: TagResources(%v): %v", ids, err)
+		return
+	}
+	klog.V(2).Infof("tagged %d disk(s) of instance %s for cost allocation", len(ids), instanceID)
 }

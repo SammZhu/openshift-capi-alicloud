@@ -85,6 +85,9 @@ func TestMachineValidateCreate(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid", func(*infrav1.AlibabaCloudMachine) {}, false},
+		// GPU instance families (ecs.gn*) must be accepted — no instance-type
+		// allowlist/regex beyond the ecs. prefix (FSD PR-C).
+		{"gpu instance type", func(m *infrav1.AlibabaCloudMachine) { m.Spec.InstanceType = "ecs.gn7i-c8g1.2xlarge" }, false},
 		{"empty instanceType", func(m *infrav1.AlibabaCloudMachine) { m.Spec.InstanceType = "" }, true},
 		{"bad instanceType prefix", func(m *infrav1.AlibabaCloudMachine) { m.Spec.InstanceType = "g7.large" }, true},
 		{"empty imageID", func(m *infrav1.AlibabaCloudMachine) { m.Spec.ImageID = "" }, true},
