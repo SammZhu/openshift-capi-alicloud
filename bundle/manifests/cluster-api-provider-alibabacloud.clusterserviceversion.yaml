@@ -1,0 +1,319 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  name: cluster-api-provider-alibabacloud.v0.1.12
+  namespace: placeholder
+  annotations:
+    capabilities: Basic Install
+    categories: Cloud Provider
+    containerImage: quay.io/samzhu/openshift-capi-alicloud:v0.1.12
+    createdAt: '2026-06-07T00:00:00Z'
+    repository: https://github.com/SammZhu/openshift-capi-alicloud
+    support: Community (best-effort, no Red Hat SLA)
+    description: "Cluster API infrastructure provider for Alibaba Cloud ECS \u2014 declarative, multi-AZ OpenShift worker provisioning on platform=external."
+    alm-examples: "[\n  {\n    \"apiVersion\": \"infrastructure.cluster.x-k8s.io/v1beta1\",\n    \"kind\": \"AlibabaCloudCluster\",\n    \"metadata\": {\n      \"name\": \"example\"\n    },\n    \"spec\": {\n      \"region\": \"cn-wulanchabu\",\n      \"bootImageID\": \"m-xxxxxxxx\",\n      \"controlPlaneEndpoint\": {\n        \"host\": \"api.example.com\",\n        \"port\": 6443\n      },\n      \"failureDomains\": [\n        {\n          \"zoneID\": \"cn-wulanchabu-a\",\n          \"vSwitchID\": \"vsw-a\"\n        },\n        {\n          \"zoneID\": \"cn-wulanchabu-b\",\n          \"vSwitchID\": \"vsw-b\"\n        }\n      ]\n    }\n  },\n  {\n    \"apiVersion\": \"infrastructure.cluster.x-k8s.io/v1beta1\",\n    \"kind\": \"AlibabaCloudMachineTemplate\",\n    \"metadata\": {\n      \"name\": \"example-worker\"\n    },\n    \"spec\": {\n      \"template\": {\n        \"spec\": {\n          \"instanceType\": \"ecs.g7.xlarge\",\n          \"regionID\": \"cn-wulanchabu\",\n          \"securityGroupIDs\": [\n            \"sg-xxxx\"\n          ],\n          \"systemDisk\": {\n            \"category\": \"cloud_essd\",\n            \"size\": 40\n          }\n        }\n      }\n    }\n  },\n  {\n    \"apiVersion\": \"infrastructure.cluster.x-k8s.io/v1beta1\",\n    \"kind\": \"AlibabaCloudMachine\",\n    \"metadata\": {\n      \"name\": \"example-machine\"\n    },\n    \"spec\": {\n      \"instanceType\": \"ecs.g7.xlarge\",\n      \"imageID\": \"m-xxxxxxxx\",\n      \"zoneID\": \"cn-wulanchabu-a\",\n      \"vSwitchID\": \"vsw-a\",\n      \"securityGroupIDs\": [\n        \"sg-xxxx\"\n      ],\n      \"metadataOptions\": {\n        \"httpTokens\": \"required\"\n      }\n    }\n  },\n  {\n    \"apiVersion\": \"infrastructure.cluster.x-k8s.io/v1beta1\",\n    \"kind\": \"AlibabaCloudClusterTemplate\",\n    \"metadata\": {\n      \"name\": \"example-cluster-tmpl\"\n    },\n    \"spec\": {\n      \"template\": {\n        \"spec\": {\n          \"region\": \"cn-wulanchabu\"\n        }\n      }\n    }\n  }\n]"
+spec:
+  displayName: Cluster API Provider Alibaba Cloud
+  description: '# Cluster API Provider for Alibaba Cloud
+
+
+    A Cluster API (CAPI) **infrastructure provider** that provisions OpenShift worker nodes on Alibaba Cloud ECS, for clusters running on `platform: external`.
+
+
+    ## Features
+
+    - Declarative worker lifecycle via MachineDeployment/MachineSet across availability zones (multi-AZ HA).
+
+    - Route B node join: aliyun-platform RHCOS + user-data Ignition (upstream-standard, no Assisted day-2).
+
+    - Controller-side kubelet CSR auto-approval for provisioned nodes.
+
+    - Idempotent instance create (adopt-by-tag, no orphans), capacity failover.
+
+    - Production hardening: Ignition OSS offload for oversized user-data, DeleteWithInstance + tag propagation to disks/ENIs, API throttle backoff, IMDSv2 enforced.
+
+
+    ## Prerequisites
+
+    - Cluster API **core** CRDs (Cluster/Machine/MachineDeployment) installed.
+
+    - An OpenShift cluster on `platform: external`.
+
+    - An aliyun-platform RHCOS boot image and Alibaba Cloud credentials (Secret `alibaba-creds`).
+
+
+    > Community-maintained. Not a Red Hat supported component.'
+  version: 0.1.12
+  maturity: alpha
+  minKubeVersion: 1.27.0
+  provider:
+    name: openshift-capi-alicloud (community)
+  maintainers:
+  - name: SammZhu
+    email: noreply@example.com
+  links:
+  - name: Source
+    url: https://github.com/SammZhu/openshift-capi-alicloud
+  - name: Worker join design
+    url: https://github.com/SammZhu/alibaba-openshift/blob/main/docs/CAPA-WORKER-JOIN.md
+  keywords:
+  - alibaba
+  - alibabacloud
+  - aliyun
+  - cluster-api
+  - capi
+  - infrastructure
+  - ecs
+  - worker
+  icon:
+  - base64data: PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTAiIGZpbGw9IiNGRjZBMDAiLz48dGV4dCB4PSIzMiIgeT0iNDIiIGZvbnQtc2l6ZT0iMzQiIGZpbGw9IiNmZmYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJzYW5zLXNlcmlmIj5BPC90ZXh0Pjwvc3ZnPg==
+    mediatype: image/svg+xml
+  installModes:
+  - type: OwnNamespace
+    supported: true
+  - type: SingleNamespace
+    supported: false
+  - type: MultiNamespace
+    supported: false
+  - type: AllNamespaces
+    supported: true
+  customresourcedefinitions:
+    owned:
+    - name: alibabacloudclusters.infrastructure.cluster.x-k8s.io
+      version: v1beta1
+      kind: AlibabaCloudCluster
+      displayName: AlibabaCloudCluster
+      description: Represents an Alibaba Cloud infrastructure cluster (region, control-plane endpoint, failure domains, Ignition OSS offload).
+    - name: alibabacloudmachines.infrastructure.cluster.x-k8s.io
+      version: v1beta1
+      kind: AlibabaCloudMachine
+      displayName: AlibabaCloudMachine
+      description: An Alibaba Cloud ECS instance backing a Cluster API Machine (instance type, disks, spot, IMDSv2, tags).
+    - name: alibabacloudmachinetemplates.infrastructure.cluster.x-k8s.io
+      version: v1beta1
+      kind: AlibabaCloudMachineTemplate
+      displayName: AlibabaCloudMachineTemplate
+      description: A template for AlibabaCloudMachines, referenced by MachineDeployments/MachineSets.
+    - name: alibabacloudclustertemplates.infrastructure.cluster.x-k8s.io
+      version: v1beta1
+      kind: AlibabaCloudClusterTemplate
+      displayName: AlibabaCloudClusterTemplate
+      description: A template for AlibabaCloudClusters.
+  webhookdefinitions:
+  - type: MutatingAdmissionWebhook
+    admissionReviewVersions:
+    - v1
+    containerPort: 443
+    targetPort: 9443
+    deploymentName: capa-controller-manager
+    failurePolicy: Fail
+    generateName: default.alibabacloudmachine.infrastructure.cluster.x-k8s.io
+    rules:
+    - apiGroups:
+      - infrastructure.cluster.x-k8s.io
+      apiVersions:
+      - v1beta1
+      operations:
+      - CREATE
+      - UPDATE
+      resources:
+      - alibabacloudmachines
+      scope: Namespaced
+    sideEffects: None
+    webhookPath: /mutate-infrastructure-cluster-x-k8s-io-v1beta1-alibabacloudmachine
+  - type: ValidatingAdmissionWebhook
+    admissionReviewVersions:
+    - v1
+    containerPort: 443
+    targetPort: 9443
+    deploymentName: capa-controller-manager
+    failurePolicy: Fail
+    generateName: validation.alibabacloudmachine.infrastructure.cluster.x-k8s.io
+    rules:
+    - apiGroups:
+      - infrastructure.cluster.x-k8s.io
+      apiVersions:
+      - v1beta1
+      operations:
+      - CREATE
+      - UPDATE
+      resources:
+      - alibabacloudmachines
+      scope: Namespaced
+    sideEffects: None
+    webhookPath: /validate-infrastructure-cluster-x-k8s-io-v1beta1-alibabacloudmachine
+  - type: ValidatingAdmissionWebhook
+    admissionReviewVersions:
+    - v1
+    containerPort: 443
+    targetPort: 9443
+    deploymentName: capa-controller-manager
+    failurePolicy: Fail
+    generateName: validation.alibabacloudcluster.infrastructure.cluster.x-k8s.io
+    rules:
+    - apiGroups:
+      - infrastructure.cluster.x-k8s.io
+      apiVersions:
+      - v1beta1
+      operations:
+      - CREATE
+      - UPDATE
+      resources:
+      - alibabacloudclusters
+      scope: Namespaced
+    sideEffects: None
+    webhookPath: /validate-infrastructure-cluster-x-k8s-io-v1beta1-alibabacloudcluster
+  install:
+    strategy: deployment
+    spec:
+      clusterPermissions:
+      - serviceAccountName: capa-controller-manager
+        rules:
+        - apiGroups:
+          - infrastructure.cluster.x-k8s.io
+          resources:
+          - alibabacloudclusters
+          - alibabacloudmachines
+          - alibabacloudclustertemplates
+          - alibabacloudmachinetemplates
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - infrastructure.cluster.x-k8s.io
+          resources:
+          - alibabacloudclusters/status
+          - alibabacloudmachines/status
+          verbs:
+          - get
+          - update
+          - patch
+        - apiGroups:
+          - infrastructure.cluster.x-k8s.io
+          resources:
+          - alibabacloudclusters/finalizers
+          - alibabacloudmachines/finalizers
+          verbs:
+          - update
+        - apiGroups:
+          - cluster.x-k8s.io
+          resources:
+          - clusters
+          - machines
+          - machines/status
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - ''
+          resources:
+          - secrets
+          - events
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+        - apiGroups:
+          - coordination.k8s.io
+          resources:
+          - leases
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - certificates.k8s.io
+          resources:
+          - certificatesigningrequests
+          verbs:
+          - get
+          - list
+          - watch
+        - apiGroups:
+          - certificates.k8s.io
+          resources:
+          - certificatesigningrequests/approval
+          verbs:
+          - update
+        - apiGroups:
+          - certificates.k8s.io
+          resources:
+          - signers
+          resourceNames:
+          - kubernetes.io/kube-apiserver-client-kubelet
+          - kubernetes.io/kubelet-serving
+          verbs:
+          - approve
+        - apiGroups:
+          - ''
+          resources:
+          - nodes
+          verbs:
+          - get
+          - list
+          - watch
+      deployments:
+      - name: capa-controller-manager
+        label:
+          app: capa-controller-manager
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: capa-controller-manager
+          template:
+            metadata:
+              labels:
+                app: capa-controller-manager
+            spec:
+              serviceAccountName: capa-controller-manager
+              terminationGracePeriodSeconds: 10
+              containers:
+              - name: manager
+                image: quay.io/samzhu/openshift-capi-alicloud:v0.1.12
+                imagePullPolicy: IfNotPresent
+                command:
+                - /manager
+                args:
+                - --leader-elect=true
+                - --concurrency=1
+                envFrom:
+                - secretRef:
+                    name: alibaba-creds
+                    optional: false
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 64Mi
+                  limits:
+                    cpu: 500m
+                    memory: 128Mi
+                livenessProbe:
+                  httpGet:
+                    path: /healthz
+                    port: 9440
+                  initialDelaySeconds: 15
+                  periodSeconds: 20
+                readinessProbe:
+                  httpGet:
+                    path: /readyz
+                    port: 9440
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                ports:
+                - name: webhook-server
+                  containerPort: 9443
+                  protocol: TCP

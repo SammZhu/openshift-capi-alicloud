@@ -1,0 +1,295 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: alibabacloudmachinetemplates.infrastructure.cluster.x-k8s.io
+spec:
+  group: infrastructure.cluster.x-k8s.io
+  names:
+    categories:
+    - cluster-api
+    kind: AlibabaCloudMachineTemplate
+    listKind: AlibabaCloudMachineTemplateList
+    plural: alibabacloudmachinetemplates
+    singular: alibabacloudmachinetemplate
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: AlibabaCloudMachineTemplate is the Schema for the alibabacloudmachinetemplates
+          API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AlibabaCloudMachineTemplateSpec defines the desired state
+              of AlibabaCloudMachineTemplate.
+            properties:
+              template:
+                description: AlibabaCloudMachineTemplateResource describes the data
+                  needed to create an AlibabaCloudMachine from a template.
+                properties:
+                  spec:
+                    description: AlibabaCloudMachineSpec defines the desired state
+                      of AlibabaCloudMachine.
+                    properties:
+                      credentialsSecret:
+                        description: |-
+                          CredentialsSecret refers to a Secret containing Alibaba Cloud credentials.
+                          If not specified, the controller uses the ambient credentials from the
+                          cluster credential infrastructure.
+                        properties:
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      dataDisks:
+                        description: DataDisks describes additional data disks.
+                        items:
+                          description: DataDisk describes an additional data disk
+                            for an ECS instance.
+                          properties:
+                            category:
+                              description: Category is the disk category.
+                              enum:
+                              - cloud_efficiency
+                              - cloud_ssd
+                              - cloud_essd
+                              - cloud_auto
+                              type: string
+                            encrypted:
+                              description: Encrypted enables server-side encryption
+                                of the disk.
+                              type: boolean
+                            kmsKeyID:
+                              description: |-
+                                KMSKeyID is the ID of the KMS key used to encrypt the disk. When Encrypted
+                                is true and KMSKeyID is empty, Alibaba Cloud's default EBS service key is
+                                used. Setting KMSKeyID without Encrypted=true is rejected by the webhook.
+                              type: string
+                            name:
+                              description: Name is an optional identifier for the
+                                data disk.
+                              type: string
+                            performanceLevel:
+                              description: |-
+                                PerformanceLevel is the ESSD performance level. Only meaningful for the
+                                cloud_essd category; ignored otherwise.
+                              enum:
+                              - PL0
+                              - PL1
+                              - PL2
+                              - PL3
+                              type: string
+                            size:
+                              description: Size is the disk size in GiB.
+                              minimum: 20
+                              type: integer
+                          required:
+                          - category
+                          - size
+                          type: object
+                        type: array
+                      imageID:
+                        description: |-
+                          ImageID is the ID of the ECS image to use for the instance. When empty, the
+                          owning AlibabaCloudCluster's spec.bootImageID is used instead (the cluster
+                          RHCOS/discovery boot image). At least one of the two must be set, otherwise
+                          provisioning fails with a terminal NoBootImage error.
+                        type: string
+                      instanceType:
+                        description: InstanceType is the ECS instance type (e.g. ecs.c6.large).
+                        type: string
+                      metadataOptions:
+                        description: |-
+                          MetadataOptions configures the instance metadata service (IMDS). When
+                          omitted, the controller applies a secure baseline: the metadata endpoint is
+                          enabled and a session token is required (IMDSv2-equivalent,
+                          httpTokens=required), which mitigates SSRF. Set explicitly to relax this.
+                        properties:
+                          httpEndpoint:
+                            description: |-
+                              HttpEndpoint enables or disables the metadata endpoint. Defaults to
+                              "enabled" when the whole MetadataOptions block is omitted.
+                            enum:
+                            - enabled
+                            - disabled
+                            type: string
+                          httpPutResponseHopLimit:
+                            description: |-
+                              HttpPutResponseHopLimit is the maximum number of network hops the metadata
+                              token may travel (1-64). 0 leaves the Alibaba Cloud API default.
+                            maximum: 64
+                            minimum: 0
+                            type: integer
+                          httpTokens:
+                            description: |-
+                              HttpTokens controls whether a session token is required to read metadata.
+                              "required" enforces IMDSv2-style token auth (the secure default);
+                              "optional" allows tokenless access.
+                            enum:
+                            - optional
+                            - required
+                            type: string
+                        type: object
+                      providerID:
+                        description: |-
+                          ProviderID is the unique identifier as specified by the cloud provider.
+                          Populated by the controller after ECS instance creation.
+                        type: string
+                      ramRoleName:
+                        description: RAMRoleName is the RAM role name to attach to
+                          the ECS instance.
+                        type: string
+                      regionID:
+                        description: RegionID is the Alibaba Cloud region. Defaults
+                          to the cluster region.
+                        type: string
+                      securityGroupIDs:
+                        description: SecurityGroupIDs is the list of security group
+                          IDs to associate with the instance.
+                        items:
+                          type: string
+                        type: array
+                      spotPriceLimit:
+                        description: |-
+                          SpotPriceLimit is the maximum hourly price (in the region's currency) for a
+                          spot instance. Required when SpotStrategy is SpotWithPriceLimit; ignored
+                          otherwise.
+                        type: number
+                      spotStrategy:
+                        description: |-
+                          SpotStrategy is the spot-instance bidding strategy:
+                            - NoSpot (or empty): regular pay-as-you-go instance.
+                            - SpotWithPriceLimit: spot instance with a user-set hourly price ceiling
+                              (SpotPriceLimit is required).
+                            - SpotAsPriceGo: spot instance priced at the current market rate.
+                        enum:
+                        - NoSpot
+                        - SpotWithPriceLimit
+                        - SpotAsPriceGo
+                        type: string
+                      systemDisk:
+                        description: SystemDisk describes the system disk configuration.
+                        properties:
+                          category:
+                            description: Category is the disk category (e.g. cloud_efficiency,
+                              cloud_ssd, cloud_essd).
+                            enum:
+                            - cloud_efficiency
+                            - cloud_ssd
+                            - cloud_essd
+                            - cloud_auto
+                            type: string
+                          encrypted:
+                            description: Encrypted enables server-side encryption
+                              of the disk.
+                            type: boolean
+                          kmsKeyID:
+                            description: |-
+                              KMSKeyID is the ID of the KMS key used to encrypt the disk. When Encrypted
+                              is true and KMSKeyID is empty, Alibaba Cloud's default EBS service key is
+                              used. Setting KMSKeyID without Encrypted=true is rejected by the webhook.
+                            type: string
+                          performanceLevel:
+                            description: |-
+                              PerformanceLevel is the ESSD performance level. Only meaningful for the
+                              cloud_essd category; ignored otherwise.
+                            enum:
+                            - PL0
+                            - PL1
+                            - PL2
+                            - PL3
+                            type: string
+                          size:
+                            description: Size is the disk size in GiB.
+                            minimum: 20
+                            type: integer
+                        required:
+                        - category
+                        - size
+                        type: object
+                      tags:
+                        description: Tags are additional tags to apply to the ECS
+                          instance.
+                        items:
+                          description: Tag is a key-value pair applied to an Alibaba
+                            Cloud resource.
+                          properties:
+                            key:
+                              description: Key is the tag key.
+                              minLength: 1
+                              type: string
+                            value:
+                              description: Value is the tag value.
+                              type: string
+                          required:
+                          - key
+                          - value
+                          type: object
+                        type: array
+                      userDataSecret:
+                        description: |-
+                          UserDataSecret refers to a Secret containing the base64-encoded user data
+                          script to execute on instance startup.
+                        properties:
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      vSwitchID:
+                        description: VSwitchID is the ID of the vSwitch to use for
+                          the primary network interface.
+                        type: string
+                      zoneID:
+                        description: ZoneID is the availability zone within the region.
+                        type: string
+                    required:
+                    - instanceType
+                    type: object
+                required:
+                - spec
+                type: object
+            required:
+            - template
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}

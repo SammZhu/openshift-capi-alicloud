@@ -1,0 +1,197 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: alibabacloudclustertemplates.infrastructure.cluster.x-k8s.io
+spec:
+  group: infrastructure.cluster.x-k8s.io
+  names:
+    categories:
+    - cluster-api
+    kind: AlibabaCloudClusterTemplate
+    listKind: AlibabaCloudClusterTemplateList
+    plural: alibabacloudclustertemplates
+    singular: alibabacloudclustertemplate
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: AlibabaCloudClusterTemplate is the Schema for the alibabacloudclustertemplates
+          API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: AlibabaCloudClusterTemplateSpec defines the desired state
+              of AlibabaCloudClusterTemplate.
+            properties:
+              template:
+                description: AlibabaCloudClusterTemplateResource describes the data
+                  needed to create an AlibabaCloudCluster from a template.
+                properties:
+                  spec:
+                    description: AlibabaCloudClusterSpec defines the desired state
+                      of AlibabaCloudCluster.
+                    properties:
+                      additionalTags:
+                        description: |-
+                          AdditionalTags are additional tags to apply to all cloud resources created
+                          for this cluster.
+                        items:
+                          description: Tag is a key-value pair applied to an Alibaba
+                            Cloud resource.
+                          properties:
+                            key:
+                              description: Key is the tag key.
+                              minLength: 1
+                              type: string
+                            value:
+                              description: Value is the tag value.
+                              type: string
+                          required:
+                          - key
+                          - value
+                          type: object
+                        type: array
+                      bootImageID:
+                        description: |-
+                          BootImageID is the Alibaba Cloud custom image used to boot worker nodes so
+                          they join THIS cluster. It is the imported OpenShift discovery/RHCOS image
+                          (the same ecs_image_id used to install the cluster, or a day-2 add-hosts
+                          infra-env image) and carries the embedded Ignition / infra-env config.
+                          AlibabaCloudMachines that omit spec.imageID fall back to this value, so a
+                          MachineDeployment template does not have to repeat it. Leaving both empty
+                          makes machine provisioning fail with a terminal NoBootImage error.
+                        type: string
+                      controlPlaneEndpoint:
+                        description: |-
+                          ControlPlaneEndpoint represents the endpoint used to communicate with the
+                          control plane. Populated by the controller once a SLB is provisioned.
+                        minProperties: 1
+                        properties:
+                          host:
+                            description: host is the hostname on which the API server
+                              is serving.
+                            maxLength: 512
+                            minLength: 1
+                            type: string
+                          port:
+                            description: port is the port on which the API server
+                              is serving.
+                            format: int32
+                            maximum: 65535
+                            minimum: 1
+                            type: integer
+                        type: object
+                      failureDomains:
+                        description: |-
+                          FailureDomains lists the availability zones available for worker node
+                          placement. Each entry pairs a zone ID with the VSwitch to use in that zone.
+                          When set, CAPI automatically distributes Machines across zones using
+                          round-robin assignment via Machine.Spec.FailureDomain.
+                          Leave ZoneID/VSwitchID in AlibabaCloudMachineTemplate empty to allow
+                          this automatic placement; explicit values in the template take precedence.
+                        items:
+                          description: |-
+                            FailureDomain maps an Alibaba Cloud availability zone to the VSwitch that
+                            should be used for ECS instances placed in that zone.
+                            When AlibabaCloudCluster.Spec.FailureDomains is populated, CAPI will
+                            automatically distribute Machines across the listed zones.
+                          properties:
+                            vSwitchID:
+                              description: VSwitchID is the ID of the VSwitch to use
+                                for instances in this zone.
+                              type: string
+                            zoneID:
+                              description: ZoneID is the Alibaba Cloud availability
+                                zone identifier (e.g. cn-hangzhou-h).
+                              type: string
+                          required:
+                          - vSwitchID
+                          - zoneID
+                          type: object
+                        type: array
+                      ignitionStorage:
+                        description: |-
+                          IgnitionStorage configures an OSS bucket used to offload worker Ignition
+                          (ECS user-data) that exceeds the RunInstances UserData size limit. When the
+                          rendered Ignition is too large, the controller uploads it to OSS and passes
+                          the instance a tiny pointer Ignition that fetches the full config from a
+                          presigned URL. Leave nil to disable offload (oversized user-data then fails
+                          provisioning with a terminal UserDataTooLarge error).
+                        properties:
+                          expirySeconds:
+                            description: |-
+                              ExpirySeconds is how long the presigned fetch URL stays valid. The node
+                              fetches Ignition once at first boot, so this only needs to outlast
+                              provisioning. Defaults to 3600 (1h).
+                            minimum: 60
+                            type: integer
+                          maxUserDataBytes:
+                            description: |-
+                              MaxUserDataBytes is the size threshold (measured on the base64 user-data)
+                              above which offload kicks in. Defaults to 16384, the ECS UserData limit.
+                            minimum: 1024
+                            type: integer
+                          ossBucket:
+                            description: |-
+                              OSSBucket is the bucket that holds offloaded Ignition objects. Required to
+                              enable offload.
+                            type: string
+                          ossEndpoint:
+                            description: |-
+                              OSSEndpoint overrides the OSS endpoint. Defaults to the region's internal
+                              endpoint (oss-<region>-internal.aliyuncs.com), reachable from within the
+                              VPC without internet egress — keeping Ignition fetch on the private network.
+                            type: string
+                        required:
+                        - ossBucket
+                        type: object
+                      region:
+                        description: Region is the Alibaba Cloud region where the
+                          cluster is deployed.
+                        type: string
+                      resourceGroupID:
+                        description: ResourceGroupID is the ID of the resource group
+                          for all cluster resources.
+                        type: string
+                      vpcID:
+                        description: |-
+                          VpcID is the ID of an existing VPC to use for the cluster. If empty, a VPC
+                          will be created.
+                        type: string
+                    required:
+                    - region
+                    type: object
+                required:
+                - spec
+                type: object
+            required:
+            - template
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}
