@@ -171,7 +171,7 @@ func (r *CertificateSigningRequestReconciler) shouldApprove(
 }
 
 // hasPendingMachine reports whether any provisioned AlibabaCloudMachine has no
-// corresponding Node yet (its providerID is absent from the node list).
+// corresponding Node yet (its instance is absent from the node list).
 func (r *CertificateSigningRequestReconciler) hasPendingMachine(ctx context.Context, machines []infrav1.AlibabaCloudMachine) (bool, error) {
 	nodes := &corev1.NodeList{}
 	if err := r.List(ctx, nodes); err != nil {
@@ -179,8 +179,8 @@ func (r *CertificateSigningRequestReconciler) hasPendingMachine(ctx context.Cont
 	}
 	joined := make(map[string]struct{}, len(nodes.Items))
 	for i := range nodes.Items {
-		if pid := nodes.Items[i].Spec.ProviderID; pid != "" {
-			joined[pid] = struct{}{}
+		if id := providerInstanceID(nodes.Items[i].Spec.ProviderID); id != "" {
+			joined[id] = struct{}{}
 		}
 	}
 	for i := range machines {
@@ -188,25 +188,40 @@ func (r *CertificateSigningRequestReconciler) hasPendingMachine(ctx context.Cont
 		if m.Spec.ProviderID == nil || m.Status.InstanceID == nil {
 			continue
 		}
-		if _, ok := joined[*m.Spec.ProviderID]; !ok {
+		if _, ok := joined[providerInstanceID(*m.Spec.ProviderID)]; !ok {
 			return true, nil
 		}
 	}
 	return false, nil
 }
 
-// nodeBackedByCAPAMachine reports whether the node's providerID matches an
-// AlibabaCloudMachine — i.e. CAPA provisioned this node.
+// nodeBackedByCAPAMachine reports whether the node was provisioned by a CAPA
+// machine. The node providerID (set by the Alibaba CCM, dot-separated
+// "alicloud://<region>.<id>") and the machine providerID (set by CAPA,
+// slash-separated "alicloud://<region>/<id>") differ in separator, so we compare
+// by the normalised instance ID rather than the raw string.
 func nodeBackedByCAPAMachine(node *corev1.Node, machines []infrav1.AlibabaCloudMachine) bool {
-	if node.Spec.ProviderID == "" {
+	id := providerInstanceID(node.Spec.ProviderID)
+	if id == "" {
 		return false
 	}
 	for i := range machines {
-		if machines[i].Spec.ProviderID != nil && *machines[i].Spec.ProviderID == node.Spec.ProviderID {
+		if machines[i].Spec.ProviderID != nil && providerInstanceID(*machines[i].Spec.ProviderID) == id {
 			return true
 		}
 	}
 	return false
+}
+
+// providerInstanceID extracts the ECS instance ID from a providerID, tolerating
+// both the CAPA slash form (alicloud://<region>/<id>) and the CCM dot form
+// (alicloud://<region>.<id>).
+func providerInstanceID(providerID string) string {
+	s := strings.TrimPrefix(providerID, "alicloud://")
+	if i := strings.LastIndexAny(s, "/."); i >= 0 {
+		return s[i+1:]
+	}
+	return s
 }
 
 // sansSubsetOfNode reports whether every IP/DNS SAN in the CSR is one of the

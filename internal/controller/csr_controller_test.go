@@ -40,15 +40,31 @@ func node(name, providerID string, addrs ...corev1.NodeAddress) *corev1.Node {
 	}
 }
 
+func TestProviderInstanceID(t *testing.T) {
+	cases := map[string]string{
+		"alicloud://cn-x/i-1": "i-1", // CAPA slash form
+		"alicloud://cn-x.i-1": "i-1", // CCM dot form
+		"i-1":                 "i-1",
+		"":                    "",
+	}
+	for in, want := range cases {
+		if got := providerInstanceID(in); got != want {
+			t.Errorf("providerInstanceID(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestNodeBackedByCAPAMachine(t *testing.T) {
+	// CAPA writes the machine providerID slash-separated; the Alibaba CCM writes
+	// the node providerID dot-separated. They must still match by instance id.
 	machines := []infrav1.AlibabaCloudMachine{
 		{Spec: infrav1.AlibabaCloudMachineSpec{ProviderID: ptr("alicloud://cn-x/i-1")}},
 	}
-	if !nodeBackedByCAPAMachine(node("n", "alicloud://cn-x/i-1"), machines) {
-		t.Error("expected match on providerID")
+	if !nodeBackedByCAPAMachine(node("n", "alicloud://cn-x.i-1"), machines) {
+		t.Error("expected match across CCM dot form vs CAPA slash form")
 	}
-	if nodeBackedByCAPAMachine(node("n", "alicloud://cn-x/i-OTHER"), machines) {
-		t.Error("should not match a different providerID")
+	if nodeBackedByCAPAMachine(node("n", "alicloud://cn-x.i-OTHER"), machines) {
+		t.Error("should not match a different instance id")
 	}
 	if nodeBackedByCAPAMachine(node("n", ""), machines) {
 		t.Error("empty node providerID must not match")
