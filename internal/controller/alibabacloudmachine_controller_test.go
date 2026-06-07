@@ -908,3 +908,34 @@ func TestMaybeOffloadUserData(t *testing.T) {
 		t.Fatal("offload: pointer is not valid JSON")
 	}
 }
+
+// TestResolveFailureDomain_MultiAZ confirms a machine assigned to the third zone
+// of a 3-AZ cluster resolves to that zone's vSwitch — the B2 HA spread path,
+// where one MachineDeployment per AZ pins failureDomain and the controller maps
+// each to its subnet.
+func TestResolveFailureDomain_MultiAZ(t *testing.T) {
+	r := &AlibabaCloudMachineReconciler{}
+	cluster := &infrav1.AlibabaCloudCluster{
+		Status: infrav1.AlibabaCloudClusterStatus{
+			FailureDomains: []clusterv1.FailureDomain{
+				{Name: "cn-wulanchabu-a", Attributes: map[string]string{"vSwitchID": "vsw-a"}},
+				{Name: "cn-wulanchabu-b", Attributes: map[string]string{"vSwitchID": "vsw-b"}},
+				{Name: "cn-wulanchabu-c", Attributes: map[string]string{"vSwitchID": "vsw-c"}},
+			},
+		},
+	}
+	for _, tc := range []struct{ zone, wantVsw string }{
+		{"cn-wulanchabu-a", "vsw-a"},
+		{"cn-wulanchabu-b", "vsw-b"},
+		{"cn-wulanchabu-c", "vsw-c"},
+	} {
+		m := &clusterv1.Machine{Spec: clusterv1.MachineSpec{FailureDomain: tc.zone}}
+		am := &infrav1.AlibabaCloudMachine{}
+		if err := r.resolveFailureDomain(m, cluster, am); err != nil {
+			t.Fatalf("%s: %v", tc.zone, err)
+		}
+		if am.Spec.ZoneID != tc.zone || am.Spec.VSwitchID != tc.wantVsw {
+			t.Errorf("%s -> zone=%q vsw=%q, want zone=%q vsw=%q", tc.zone, am.Spec.ZoneID, am.Spec.VSwitchID, tc.zone, tc.wantVsw)
+		}
+	}
+}
