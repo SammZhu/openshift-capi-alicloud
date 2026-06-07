@@ -37,6 +37,8 @@ spec:
 
     - Cluster API **core** CRDs (Cluster/Machine/MachineDeployment) installed.
 
+    - The **Alibaba cloud-controller-manager** (cloud-provider-alibaba-cloud) running. It removes the `node.cloudprovider.kubernetes.io/uninitialized` taint, sets Node providerID/addresses/zone labels, and provides Service load balancers. **Without it, provisioned workers stay unschedulable and their Machines never reach Running.**
+
     - An OpenShift cluster on `platform: external`.
 
     - An aliyun-platform RHCOS boot image and Alibaba Cloud credentials (Secret `alibaba-creds`).

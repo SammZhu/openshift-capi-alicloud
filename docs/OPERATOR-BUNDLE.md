@@ -49,9 +49,20 @@ These are **validation-time / P6-DIST.2-3** items, not fixable offline:
    the mount path matches (or set `--webhook-cert-dir`). This is the cert-manager/
    OLM webhook decoupling tracked in P6-DIST.2.
 2. **CAPI core dependency** — the operator requires Cluster API core CRDs
-   (Cluster/Machine/MachineDeployment). Declare via `dependencies.yaml` or document
-   as a hard prerequisite (P6-DIST.3).
-3. **Credentials Secret** — the Deployment mounts `alibaba-creds` (`optional:false`);
+   (Cluster/Machine/MachineDeployment). OLM auto-resolution does NOT cover it (CAPI
+   core is not an OperatorHub package), so document as a hard prerequisite rather
+   than declaring `olm.gvk required` (a pre-existing CRD may not satisfy OLM's
+   resolver and can wedge the subscription). P6-DIST.3.
+3. **Alibaba cloud-controller-manager (CCM)** — a **runtime prerequisite**, NOT a
+   code dependency. CAPA creates the ECS and the node joins, but the CCM is what
+   removes the `node.cloudprovider.kubernetes.io/uninitialized` taint and sets the
+   Node providerID/addresses/zone labels + Service load balancers. Without it,
+   provisioned workers stay unschedulable and their Machines never reach Running.
+   The CCM is a DaemonSet/Deployment (not an OLM operator) so OLM cannot install or
+   gate on it — document it, and surface a runtime degraded condition when it is
+   missing (see P3-CAPA.27). In the OpenShift-native path (P6-DIST.1/path 2) the CCM
+   is managed by `cluster-cloud-controller-manager-operator` at the platform level.
+4. **Credentials Secret** — the Deployment mounts `alibaba-creds` (`optional:false`);
    the operator's namespace must have it before the pod starts. Document in the CSV
    description / install notes.
 
