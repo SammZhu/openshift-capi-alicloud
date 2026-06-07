@@ -131,6 +131,42 @@ spec:
                   - zoneID
                   type: object
                 type: array
+              ignitionStorage:
+                description: |-
+                  IgnitionStorage configures an OSS bucket used to offload worker Ignition
+                  (ECS user-data) that exceeds the RunInstances UserData size limit. When the
+                  rendered Ignition is too large, the controller uploads it to OSS and passes
+                  the instance a tiny pointer Ignition that fetches the full config from a
+                  presigned URL. Leave nil to disable offload (oversized user-data then fails
+                  provisioning with a terminal UserDataTooLarge error).
+                properties:
+                  expirySeconds:
+                    description: |-
+                      ExpirySeconds is how long the presigned fetch URL stays valid. The node
+                      fetches Ignition once at first boot, so this only needs to outlast
+                      provisioning. Defaults to 3600 (1h).
+                    minimum: 60
+                    type: integer
+                  maxUserDataBytes:
+                    description: |-
+                      MaxUserDataBytes is the size threshold (measured on the base64 user-data)
+                      above which offload kicks in. Defaults to 16384, the ECS UserData limit.
+                    minimum: 1024
+                    type: integer
+                  ossBucket:
+                    description: |-
+                      OSSBucket is the bucket that holds offloaded Ignition objects. Required to
+                      enable offload.
+                    type: string
+                  ossEndpoint:
+                    description: |-
+                      OSSEndpoint overrides the OSS endpoint. Defaults to the region's internal
+                      endpoint (oss-<region>-internal.aliyuncs.com), reachable from within the
+                      VPC without internet egress — keeping Ignition fetch on the private network.
+                    type: string
+                required:
+                - ossBucket
+                type: object
               region:
                 description: Region is the Alibaba Cloud region where the cluster
                   is deployed.

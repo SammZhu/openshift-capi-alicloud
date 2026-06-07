@@ -46,6 +46,15 @@ type AlibabaCloudClusterSpec struct {
 	// +optional
 	AdditionalTags []Tag `json:"additionalTags,omitempty"`
 
+	// IgnitionStorage configures an OSS bucket used to offload worker Ignition
+	// (ECS user-data) that exceeds the RunInstances UserData size limit. When the
+	// rendered Ignition is too large, the controller uploads it to OSS and passes
+	// the instance a tiny pointer Ignition that fetches the full config from a
+	// presigned URL. Leave nil to disable offload (oversized user-data then fails
+	// provisioning with a terminal UserDataTooLarge error).
+	// +optional
+	IgnitionStorage *IgnitionStorageSpec `json:"ignitionStorage,omitempty"`
+
 	// FailureDomains lists the availability zones available for worker node
 	// placement. Each entry pairs a zone ID with the VSwitch to use in that zone.
 	// When set, CAPI automatically distributes Machines across zones using
@@ -54,6 +63,42 @@ type AlibabaCloudClusterSpec struct {
 	// this automatic placement; explicit values in the template take precedence.
 	// +optional
 	FailureDomains []FailureDomain `json:"failureDomains,omitempty"`
+}
+
+// IgnitionStorageSpec configures OSS-backed offload of oversized Ignition.
+type IgnitionStorageSpec struct {
+	// OSSBucket is the bucket that holds offloaded Ignition objects. Required to
+	// enable offload.
+	// +kubebuilder:validation:Required
+	OSSBucket string `json:"ossBucket"`
+
+	// OSSEndpoint overrides the OSS endpoint. Defaults to the region's internal
+	// endpoint (oss-<region>-internal.aliyuncs.com), reachable from within the
+	// VPC without internet egress — keeping Ignition fetch on the private network.
+	// +optional
+	OSSEndpoint string `json:"ossEndpoint,omitempty"`
+
+	// ExpirySeconds is how long the presigned fetch URL stays valid. The node
+	// fetches Ignition once at first boot, so this only needs to outlast
+	// provisioning. Defaults to 3600 (1h).
+	// +kubebuilder:validation:Minimum=60
+	// +optional
+	ExpirySeconds int `json:"expirySeconds,omitempty"`
+
+	// MaxUserDataBytes is the size threshold (measured on the base64 user-data)
+	// above which offload kicks in. Defaults to 16384, the ECS UserData limit.
+	// +kubebuilder:validation:Minimum=1024
+	// +optional
+	MaxUserDataBytes int `json:"maxUserDataBytes,omitempty"`
+}
+
+// IgnitionOSSRef records the OSS object holding a machine's offloaded Ignition,
+// so it can be cleaned up on deletion (the cluster spec is not available on the
+// delete path, so the coordinates are carried here).
+type IgnitionOSSRef struct {
+	Bucket   string `json:"bucket"`
+	Endpoint string `json:"endpoint,omitempty"`
+	Key      string `json:"key"`
 }
 
 // AlibabaCloudClusterStatus defines the observed state of AlibabaCloudCluster.

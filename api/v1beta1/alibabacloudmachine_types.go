@@ -77,6 +77,13 @@ type AlibabaCloudMachineSpec struct {
 	// +optional
 	Tags []Tag `json:"tags,omitempty"`
 
+	// MetadataOptions configures the instance metadata service (IMDS). When
+	// omitted, the controller applies a secure baseline: the metadata endpoint is
+	// enabled and a session token is required (IMDSv2-equivalent,
+	// httpTokens=required), which mitigates SSRF. Set explicitly to relax this.
+	// +optional
+	MetadataOptions *MetadataOptions `json:"metadataOptions,omitempty"`
+
 	// UserDataSecret refers to a Secret containing the base64-encoded user data
 	// script to execute on instance startup.
 	// +optional
@@ -87,6 +94,29 @@ type AlibabaCloudMachineSpec struct {
 	// cluster credential infrastructure.
 	// +optional
 	CredentialsSecret *corev1.LocalObjectReference `json:"credentialsSecret,omitempty"`
+}
+
+// MetadataOptions configures the ECS instance metadata service (IMDS) hardening.
+type MetadataOptions struct {
+	// HttpEndpoint enables or disables the metadata endpoint. Defaults to
+	// "enabled" when the whole MetadataOptions block is omitted.
+	// +kubebuilder:validation:Enum=enabled;disabled
+	// +optional
+	HttpEndpoint string `json:"httpEndpoint,omitempty"`
+
+	// HttpTokens controls whether a session token is required to read metadata.
+	// "required" enforces IMDSv2-style token auth (the secure default);
+	// "optional" allows tokenless access.
+	// +kubebuilder:validation:Enum=optional;required
+	// +optional
+	HttpTokens string `json:"httpTokens,omitempty"`
+
+	// HttpPutResponseHopLimit is the maximum number of network hops the metadata
+	// token may travel (1-64). 0 leaves the Alibaba Cloud API default.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=64
+	// +optional
+	HttpPutResponseHopLimit int `json:"httpPutResponseHopLimit,omitempty"`
 }
 
 // AlibabaCloudMachineStatus defines the observed state of AlibabaCloudMachine.
@@ -122,6 +152,12 @@ type AlibabaCloudMachineStatus struct {
 	// for logging and human consumption.
 	// +optional
 	FailureMessage *string `json:"failureMessage,omitempty"`
+
+	// IgnitionOSS records the OSS object holding this machine's offloaded
+	// Ignition (set only when user-data exceeded the ECS limit and was offloaded),
+	// so the controller can delete it when the machine is removed.
+	// +optional
+	IgnitionOSS *IgnitionOSSRef `json:"ignitionOSS,omitempty"`
 }
 
 // +kubebuilder:object:root=true

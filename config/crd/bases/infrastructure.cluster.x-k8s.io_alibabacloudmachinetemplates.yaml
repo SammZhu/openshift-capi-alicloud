@@ -129,6 +129,38 @@ spec:
                       instanceType:
                         description: InstanceType is the ECS instance type (e.g. ecs.c6.large).
                         type: string
+                      metadataOptions:
+                        description: |-
+                          MetadataOptions configures the instance metadata service (IMDS). When
+                          omitted, the controller applies a secure baseline: the metadata endpoint is
+                          enabled and a session token is required (IMDSv2-equivalent,
+                          httpTokens=required), which mitigates SSRF. Set explicitly to relax this.
+                        properties:
+                          httpEndpoint:
+                            description: |-
+                              HttpEndpoint enables or disables the metadata endpoint. Defaults to
+                              "enabled" when the whole MetadataOptions block is omitted.
+                            enum:
+                            - enabled
+                            - disabled
+                            type: string
+                          httpPutResponseHopLimit:
+                            description: |-
+                              HttpPutResponseHopLimit is the maximum number of network hops the metadata
+                              token may travel (1-64). 0 leaves the Alibaba Cloud API default.
+                            maximum: 64
+                            minimum: 0
+                            type: integer
+                          httpTokens:
+                            description: |-
+                              HttpTokens controls whether a session token is required to read metadata.
+                              "required" enforces IMDSv2-style token auth (the secure default);
+                              "optional" allows tokenless access.
+                            enum:
+                            - optional
+                            - required
+                            type: string
+                        type: object
                       providerID:
                         description: |-
                           ProviderID is the unique identifier as specified by the cloud provider.

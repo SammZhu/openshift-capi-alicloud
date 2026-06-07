@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/aliyun/alibaba-cloud-sdk-go v1.61.1458
+	github.com/aliyun/aliyun-oss-go-sdk v3.0.2+incompatible
 	github.com/blang/semver v3.5.1+incompatible
 	github.com/go-logr/logr v1.4.3
 	github.com/golang/mock v1.6.0

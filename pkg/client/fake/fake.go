@@ -22,6 +22,8 @@ type FakeClient struct {
 	DescribeInstanceByIDFn func(instanceID string) (*alibabaClient.InstanceDescription, error)
 	CreateECSInstanceFn    func(params alibabaClient.CreateInstanceParams) (*alibabaClient.CreateInstanceResponse, error)
 	DeleteECSInstanceFn    func(instanceID string, force bool) error
+	PutIgnitionObjectFn    func(params alibabaClient.IgnitionStoreParams) (string, error)
+	DeleteIgnitionObjectFn func(params alibabaClient.IgnitionStoreParams) error
 }
 
 // Verify interface compliance at compile time.
@@ -46,6 +48,20 @@ func (f *FakeClient) CreateECSInstance(p alibabaClient.CreateInstanceParams) (*a
 func (f *FakeClient) DeleteECSInstance(id string, force bool) error {
 	if f.DeleteECSInstanceFn != nil {
 		return f.DeleteECSInstanceFn(id, force)
+	}
+	return nil
+}
+
+func (f *FakeClient) PutIgnitionObject(p alibabaClient.IgnitionStoreParams) (string, error) {
+	if f.PutIgnitionObjectFn != nil {
+		return f.PutIgnitionObjectFn(p)
+	}
+	return "https://fake-bucket.oss-fake-internal.aliyuncs.com/" + p.Key, nil
+}
+
+func (f *FakeClient) DeleteIgnitionObject(p alibabaClient.IgnitionStoreParams) error {
+	if f.DeleteIgnitionObjectFn != nil {
+		return f.DeleteIgnitionObjectFn(p)
 	}
 	return nil
 }

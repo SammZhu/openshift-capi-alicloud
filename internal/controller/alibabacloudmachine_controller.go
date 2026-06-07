@@ -2,10 +2,14 @@ package controller
 
 import (
 	"context"
+	"crypto/sha512"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	sdkerrors "github.com/aliyun/alibaba-cloud-sdk-go/sdk/errors"
 	"github.com/go-logr/logr"
@@ -251,6 +255,7 @@ func (r *AlibabaCloudMachineReconciler) reconcileDelete(ctx context.Context, ali
 	}
 	if info == nil {
 		log.Info("ECS instance is gone, removing finalizer", "instanceID", instanceID)
+		r.cleanupOffloadedIgnition(ctx, alibabaSDKClient, region, alibabaCloudMachine)
 		controllerutil.RemoveFinalizer(alibabaCloudMachine, infrav1.MachineFinalizer)
 		return ctrl.Result{}, nil
 	}
@@ -290,6 +295,32 @@ func (r *AlibabaCloudMachineReconciler) reconcileDelete(ctx context.Context, ali
 	return ctrl.Result{RequeueAfter: requeueAfter}, nil
 }
 
+// cleanupOffloadedIgnition best-effort deletes the machine's offloaded Ignition
+// OSS object. Failures are logged, not fatal — an OSS bucket lifecycle rule on
+// the capi-ignition/ prefix is the authoritative backstop against leaks.
+func (r *AlibabaCloudMachineReconciler) cleanupOffloadedIgnition(
+	ctx context.Context,
+	c alibabaClient.Client,
+	region string,
+	m *infrav1.AlibabaCloudMachine,
+) {
+	ref := m.Status.IgnitionOSS
+	if ref == nil {
+		return
+	}
+	log := ctrl.LoggerFrom(ctx)
+	if err := c.DeleteIgnitionObject(alibabaClient.IgnitionStoreParams{
+		Bucket:   ref.Bucket,
+		Endpoint: ref.Endpoint,
+		RegionID: region,
+		Key:      ref.Key,
+	}); err != nil {
+		log.Error(err, "best-effort: failed to delete offloaded ignition object", "key", ref.Key)
+		return
+	}
+	log.Info("deleted offloaded ignition object", "key", ref.Key)
+}
+
 // resolveRegion returns the effective region for a machine: the explicit
 // Spec.RegionID when set, otherwise the owning cluster's Spec.Region.
 // AlibabaCloudMachine.Spec.RegionID is optional (region normally lives on the
@@ -304,6 +335,32 @@ func resolveRegion(m *infrav1.AlibabaCloudMachine, c *infrav1.AlibabaCloudCluste
 		return c.Spec.Region
 	}
 	return ""
+}
+
+// IMDS hardening defaults: a metadata endpoint that is reachable only with a
+// session token (IMDSv2-equivalent). Applied when the machine does not specify
+// MetadataOptions, or leaves individual fields empty.
+const (
+	defaultHTTPEndpoint = "enabled"
+	defaultHTTPTokens   = "required"
+)
+
+// resolveMetadataOptions returns the effective (httpEndpoint, httpTokens,
+// hopLimit) for RunInstances, defaulting to the secure IMDSv2 baseline. A nil
+// spec, or empty individual fields, fall back to the defaults — so the only way
+// to get tokenless metadata is to set httpTokens=optional explicitly.
+func resolveMetadataOptions(o *infrav1.MetadataOptions) (endpoint, tokens string, hopLimit int) {
+	endpoint, tokens = defaultHTTPEndpoint, defaultHTTPTokens
+	if o == nil {
+		return endpoint, tokens, 0
+	}
+	if o.HttpEndpoint != "" {
+		endpoint = o.HttpEndpoint
+	}
+	if o.HttpTokens != "" {
+		tokens = o.HttpTokens
+	}
+	return endpoint, tokens, o.HttpPutResponseHopLimit
 }
 
 // providerIDFor builds a CAPI-conformant providerID.  The Cluster API
@@ -458,6 +515,19 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 	// never Spec.RegionID directly (it is usually empty; see resolveRegion).
 	region := resolveRegion(alibabaCloudMachine, alibabaCluster)
 
+	// Metadata service hardening: default to IMDSv2 (token required) unless the
+	// spec opts out. Done here (not only in the webhook) so the secure baseline
+	// holds even when admission webhooks are disabled.
+	httpEndpoint, httpTokens, hopLimit := resolveMetadataOptions(alibabaCloudMachine.Spec.MetadataOptions)
+
+	// Offload the Ignition to OSS if it exceeds the ECS UserData limit, replacing
+	// the payload with a tiny pointer Ignition that fetches the full config from a
+	// presigned URL. No-op when the user-data is within the limit.
+	userData, err = r.maybeOffloadUserData(c, alibabaCluster, alibabaCloudMachine, region, userData)
+	if err != nil {
+		return err
+	}
+
 	resp, createErr := c.CreateECSInstance(alibabaClient.CreateInstanceParams{
 		RegionID:                   region,
 		ZoneID:                     alibabaCloudMachine.Spec.ZoneID,
@@ -477,6 +547,9 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 		ResourceGroupID:            alibabaCluster.Spec.ResourceGroupID,
 		SpotStrategy:               alibabaCloudMachine.Spec.SpotStrategy,
 		SpotPriceLimit:             alibabaCloudMachine.Spec.SpotPriceLimit,
+		HttpEndpoint:               httpEndpoint,
+		HttpTokens:                 httpTokens,
+		HttpPutResponseHopLimit:    hopLimit,
 	})
 	if createErr != nil {
 		return classifyCreateError(createErr)
@@ -632,6 +705,101 @@ func (r *AlibabaCloudMachineReconciler) getUserData(
 	// Secret.Data is already raw bytes (k8s base64-decodes it on retrieval).
 	// ECS RunInstances expects a base64-encoded string.
 	return base64.StdEncoding.EncodeToString(raw), nil
+}
+
+// defaultMaxUserDataBytes is the ECS RunInstances UserData size limit. Beyond
+// this the API rejects the request, so the controller offloads to OSS.
+const defaultMaxUserDataBytes = 16384
+
+// maybeOffloadUserData returns userData unchanged when it is within the ECS
+// UserData limit. When it exceeds the limit it offloads the full Ignition to OSS
+// and returns a base64 pointer Ignition (ignition.config.replace with a presigned
+// URL + sha512 verification). It records the OSS object on the machine status so
+// reconcileDelete can clean it up. When offload is needed but no OSS bucket is
+// configured, it returns a terminal error so the MachineSet remediates rather
+// than the controller hot-looping on a request the API will always reject.
+func (r *AlibabaCloudMachineReconciler) maybeOffloadUserData(
+	c alibabaClient.Client,
+	cluster *infrav1.AlibabaCloudCluster,
+	m *infrav1.AlibabaCloudMachine,
+	region, userData string,
+) (string, error) {
+	store := cluster.Spec.IgnitionStorage
+	threshold := defaultMaxUserDataBytes
+	if store != nil && store.MaxUserDataBytes > 0 {
+		threshold = store.MaxUserDataBytes
+	}
+	if len(userData) <= threshold {
+		return userData, nil
+	}
+
+	if store == nil || store.OSSBucket == "" {
+		return "", newTerminalError("UserDataTooLarge", fmt.Sprintf(
+			"user-data is %d bytes (> %d) and spec.ignitionStorage.ossBucket is not set to offload it to OSS",
+			len(userData), threshold))
+	}
+
+	// userData is base64; OSS stores the raw Ignition JSON.
+	raw, err := base64.StdEncoding.DecodeString(userData)
+	if err != nil {
+		return "", fmt.Errorf("decode user-data for OSS offload: %w", err)
+	}
+
+	key := ignitionObjectKey(cluster, m)
+	expiry := time.Duration(store.ExpirySeconds) * time.Second
+	url, err := c.PutIgnitionObject(alibabaClient.IgnitionStoreParams{
+		Bucket:   store.OSSBucket,
+		Endpoint: store.OSSEndpoint,
+		RegionID: region,
+		Key:      key,
+		Data:     raw,
+		Expiry:   expiry,
+	})
+	if err != nil {
+		return "", fmt.Errorf("offload user-data to OSS: %w", err)
+	}
+
+	pointer, err := buildIgnitionPointer(url, raw)
+	if err != nil {
+		return "", err
+	}
+
+	m.Status.IgnitionOSS = &infrav1.IgnitionOSSRef{
+		Bucket:   store.OSSBucket,
+		Endpoint: store.OSSEndpoint,
+		Key:      key,
+	}
+	return base64.StdEncoding.EncodeToString(pointer), nil
+}
+
+// ignitionObjectKey is the deterministic OSS key for a machine's offloaded
+// Ignition. Deterministic so retries overwrite rather than orphan.
+func ignitionObjectKey(cluster *infrav1.AlibabaCloudCluster, m *infrav1.AlibabaCloudMachine) string {
+	return fmt.Sprintf("capi-ignition/%s/%s/%s.ign", cluster.Name, m.Namespace, m.Name)
+}
+
+// buildIgnitionPointer builds a minimal Ignition config that replaces itself
+// with the full config fetched from url, pinned to the sha512 of raw so a
+// truncated or tampered fetch fails closed.
+func buildIgnitionPointer(url string, raw []byte) ([]byte, error) {
+	sum := sha512.Sum512(raw)
+	hash := "sha512-" + hex.EncodeToString(sum[:])
+	cfg := map[string]any{
+		"ignition": map[string]any{
+			"version": "3.4.0",
+			"config": map[string]any{
+				"replace": map[string]any{
+					"source":       url,
+					"verification": map[string]any{"hash": hash},
+				},
+			},
+		},
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal pointer ignition: %w", err)
+	}
+	return b, nil
 }
 
 // resolveFailureDomain fills in ZoneID and VSwitchID on the machine from the

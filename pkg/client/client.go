@@ -169,6 +169,10 @@ type Client interface {
 	DescribeInstanceByID(instanceID string) (*InstanceDescription, error)
 	CreateECSInstance(params CreateInstanceParams) (*CreateInstanceResponse, error)
 	DeleteECSInstance(instanceID string, force bool) error
+
+	// Ignition (user-data) OSS offload — see oss.go.
+	PutIgnitionObject(params IgnitionStoreParams) (presignedURL string, err error)
+	DeleteIgnitionObject(params IgnitionStoreParams) error
 }
 
 type alibabacloudClient struct {

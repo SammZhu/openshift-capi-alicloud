@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -797,5 +798,113 @@ func TestCreateInstance_NoBootImageIsTerminal(t *testing.T) {
 	var termErr *terminalError
 	if !errors.As(err, &termErr) || termErr.reason != "NoBootImage" {
 		t.Fatalf("expected NoBootImage terminal error, got %v", err)
+	}
+}
+
+func TestResolveMetadataOptions(t *testing.T) {
+	cases := []struct {
+		name         string
+		in           *infrav1.MetadataOptions
+		wantEndpoint string
+		wantTokens   string
+		wantHop      int
+	}{
+		{"nil defaults to secure baseline", nil, "enabled", "required", 0},
+		{"empty fields fall back to defaults", &infrav1.MetadataOptions{}, "enabled", "required", 0},
+		{"explicit opt-out to tokenless", &infrav1.MetadataOptions{HttpTokens: "optional"}, "enabled", "optional", 0},
+		{"explicit disable endpoint", &infrav1.MetadataOptions{HttpEndpoint: "disabled"}, "disabled", "required", 0},
+		{"hop limit passthrough", &infrav1.MetadataOptions{HttpPutResponseHopLimit: 2}, "enabled", "required", 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ep, tok, hop := resolveMetadataOptions(tc.in)
+			if ep != tc.wantEndpoint || tok != tc.wantTokens || hop != tc.wantHop {
+				t.Errorf("resolveMetadataOptions = (%q,%q,%d), want (%q,%q,%d)",
+					ep, tok, hop, tc.wantEndpoint, tc.wantTokens, tc.wantHop)
+			}
+		})
+	}
+}
+
+func TestIgnitionObjectKey(t *testing.T) {
+	cluster := &infrav1.AlibabaCloudCluster{}
+	cluster.Name = "demo"
+	m := &infrav1.AlibabaCloudMachine{}
+	m.Namespace = "ns1"
+	m.Name = "worker-a"
+	if got := ignitionObjectKey(cluster, m); got != "capi-ignition/demo/ns1/worker-a.ign" {
+		t.Errorf("ignitionObjectKey = %q", got)
+	}
+}
+
+func TestBuildIgnitionPointer(t *testing.T) {
+	raw := []byte(`{"ignition":{"version":"3.4.0"},"big":"payload"}`)
+	url := "https://b.oss-cn-x-internal.aliyuncs.com/k?sig=abc"
+	out, err := buildIgnitionPointer(url, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(out, &cfg); err != nil {
+		t.Fatalf("pointer not valid JSON: %v", err)
+	}
+	repl := cfg["ignition"].(map[string]any)["config"].(map[string]any)["replace"].(map[string]any)
+	if repl["source"] != url {
+		t.Errorf("source = %v, want %v", repl["source"], url)
+	}
+	hash := repl["verification"].(map[string]any)["hash"].(string)
+	if len(hash) < len("sha512-") || hash[:7] != "sha512-" {
+		t.Errorf("hash = %q, want sha512- prefix", hash)
+	}
+}
+
+func TestMaybeOffloadUserData(t *testing.T) {
+	r := &AlibabaCloudMachineReconciler{}
+	cluster := &infrav1.AlibabaCloudCluster{}
+	cluster.Name = "c"
+	m := &infrav1.AlibabaCloudMachine{}
+	m.Namespace = "ns"
+	m.Name = "w"
+
+	small := base64.StdEncoding.EncodeToString([]byte("tiny"))
+	big := base64.StdEncoding.EncodeToString(make([]byte, 20000)) // > 16384 base64
+
+	// 1. small payload passes through untouched, no offload, no status.
+	fake := &fakeclient.FakeClient{}
+	got, err := r.maybeOffloadUserData(fake, cluster, m, "cn-x", small)
+	if err != nil || got != small || m.Status.IgnitionOSS != nil {
+		t.Fatalf("small: got=%v err=%v ossRef=%v", got == small, err, m.Status.IgnitionOSS)
+	}
+
+	// 2. oversized + no storage configured -> terminal UserDataTooLarge.
+	_, err = r.maybeOffloadUserData(fake, cluster, m, "cn-x", big)
+	var term *terminalError
+	if !errors.As(err, &term) || term.reason != "UserDataTooLarge" {
+		t.Fatalf("oversized/no-store: want terminal UserDataTooLarge, got %v", err)
+	}
+
+	// 3. oversized + storage configured -> pointer returned + status recorded.
+	cluster.Spec.IgnitionStorage = &infrav1.IgnitionStorageSpec{OSSBucket: "bkt"}
+	var putCalled bool
+	fake.PutIgnitionObjectFn = func(p alibabaClient.IgnitionStoreParams) (string, error) {
+		putCalled = true
+		if p.Bucket != "bkt" || p.Key != "capi-ignition/c/ns/w.ign" {
+			t.Errorf("unexpected put params: %+v", p)
+		}
+		return "https://bkt.oss-cn-x-internal.aliyuncs.com/" + p.Key + "?sig=x", nil
+	}
+	out, err := r.maybeOffloadUserData(fake, cluster, m, "cn-x", big)
+	if err != nil || !putCalled {
+		t.Fatalf("offload: err=%v putCalled=%v", err, putCalled)
+	}
+	if out == big {
+		t.Fatal("offload: user-data not replaced with pointer")
+	}
+	if m.Status.IgnitionOSS == nil || m.Status.IgnitionOSS.Key != "capi-ignition/c/ns/w.ign" {
+		t.Fatalf("offload: status.IgnitionOSS not recorded: %+v", m.Status.IgnitionOSS)
+	}
+	decoded, _ := base64.StdEncoding.DecodeString(out)
+	if !json.Valid(decoded) {
+		t.Fatal("offload: pointer is not valid JSON")
 	}
 }

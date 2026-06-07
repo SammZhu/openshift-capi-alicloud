@@ -56,6 +56,15 @@ type CreateInstanceParams struct {
 	// SpotPriceLimit is the hourly price ceiling; only used with
 	// SpotWithPriceLimit.
 	SpotPriceLimit *float64
+	// Instance metadata service (IMDS) hardening. The controller defaults these
+	// to the secure baseline (HttpEndpoint=enabled, HttpTokens=required) so that
+	// metadata access requires a token (IMDSv2-equivalent), mitigating SSRF.
+	// Empty means "leave the Alibaba Cloud API default".
+	HttpEndpoint string
+	HttpTokens   string
+	// HttpPutResponseHopLimit caps the metadata token TTL hop count; 0 leaves the
+	// API default.
+	HttpPutResponseHopLimit int
 }
 
 // CreateInstanceResponse is the normalised response from CreateECSInstance.
@@ -121,6 +130,11 @@ func NewCAPIClient(_ runtimeclient.Client, regionID string) (Client, error) {
 	sdkConfig := &sdk.Config{
 		UserAgent: machineProviderUserAgent,
 		Scheme:    "HTTPS",
+		// SDK-level retry covers transport errors and HTTP 5xx. Throttling (4xx
+		// Throttling* codes) is handled separately by retryThrottled with backoff,
+		// since the SDK's built-in retry neither matches those codes nor sleeps.
+		AutoRetry:    true,
+		MaxRetryTime: 3,
 	}
 
 	cred := resolveCredential()
@@ -183,7 +197,11 @@ func (c *alibabacloudClient) DescribeInstanceByID(instanceID string) (*InstanceD
 	req := ecs.CreateDescribeInstancesRequest()
 	req.InstanceIds = fmt.Sprintf(`["%s"]`, instanceID)
 
-	resp, err := c.ecsClient.DescribeInstances(req)
+	var resp *ecs.DescribeInstancesResponse
+	err := retryThrottled("DescribeInstances", func() (e error) {
+		resp, e = c.ecsClient.DescribeInstances(req)
+		return e
+	})
 	if err != nil {
 		return nil, fmt.Errorf("DescribeInstances(%s): %w", instanceID, err)
 	}
@@ -217,7 +235,10 @@ func (c *alibabacloudClient) DeleteECSInstance(instanceID string, force bool) er
 	delReq := ecs.CreateDeleteInstanceRequest()
 	delReq.InstanceId = instanceID
 	delReq.Force = "true" // allows deletion from Stopping/Stopped states
-	if _, err := c.ecsClient.DeleteInstance(delReq); err != nil {
+	if err := retryThrottled("DeleteInstance", func() error {
+		_, e := c.ecsClient.DeleteInstance(delReq)
+		return e
+	}); err != nil {
 		return fmt.Errorf("DeleteInstance(%s): %w", instanceID, err)
 	}
 	klog.Infof("Deleted ECS instance %s", instanceID)
@@ -245,7 +266,11 @@ func (c *alibabacloudClient) findInstanceByTag(region, key, value string) (strin
 	req := ecs.CreateDescribeInstancesRequest()
 	req.RegionId = region
 	req.Tag = &[]ecs.DescribeInstancesTag{{Key: key, Value: value}}
-	resp, err := c.ecsClient.DescribeInstances(req)
+	var resp *ecs.DescribeInstancesResponse
+	err := retryThrottled("DescribeInstances", func() (e error) {
+		resp, e = c.ecsClient.DescribeInstances(req)
+		return e
+	})
 	if err != nil {
 		return "", fmt.Errorf("DescribeInstances by tag %s=%s: %w", key, value, err)
 	}
@@ -308,11 +333,29 @@ func (c *alibabacloudClient) CreateECSInstance(params CreateInstanceParams) (*Cr
 		req.SpotPriceLimit = requests.NewFloat(*params.SpotPriceLimit)
 	}
 
+	// Instance metadata service hardening (IMDSv2). With HttpTokens=required the
+	// node's metadata can only be read with a session token, mitigating SSRF.
+	if params.HttpEndpoint != "" {
+		req.HttpEndpoint = params.HttpEndpoint
+	}
+	if params.HttpTokens != "" {
+		req.HttpTokens = params.HttpTokens
+	}
+	if params.HttpPutResponseHopLimit > 0 {
+		req.HttpPutResponseHopLimit = requests.NewInteger(params.HttpPutResponseHopLimit)
+	}
+
 	if len(params.SecurityGroupIDs) > 0 {
 		ids := make([]string, len(params.SecurityGroupIDs))
 		copy(ids, params.SecurityGroupIDs)
 		req.SecurityGroupIds = &ids
 	}
+
+	// Bind the system disk's lifecycle to the instance explicitly. Pay-as-you-go
+	// system disks are already released with the instance, but setting it removes
+	// any ambiguity and guards against a misconfigured retained system disk
+	// becoming an orphan that keeps billing after the Machine is gone.
+	req.GetQueryParams()["SystemDisk.DeleteWithInstance"] = "true"
 
 	if len(params.DataDisks) > 0 {
 		disks := make([]ecs.RunInstancesDataDisk, len(params.DataDisks))
@@ -322,6 +365,9 @@ func (c *alibabacloudClient) CreateECSInstance(params CreateInstanceParams) (*Cr
 				Size:             fmt.Sprintf("%d", d.Size),
 				PerformanceLevel: d.PerformanceLevel,
 				KMSKeyId:         d.KMSKeyID,
+				// Disks created with the instance must die with it — otherwise a
+				// deleted Machine leaves orphan data disks billing indefinitely.
+				DeleteWithInstance: "true",
 			}
 			if d.Encrypted != nil {
 				disks[i].Encrypted = strconv.FormatBool(*d.Encrypted)
@@ -336,7 +382,11 @@ func (c *alibabacloudClient) CreateECSInstance(params CreateInstanceParams) (*Cr
 	}
 	req.Tag = &tags
 
-	resp, err := c.ecsClient.RunInstances(req)
+	var resp *ecs.RunInstancesResponse
+	err := retryThrottled("RunInstances", func() (e error) {
+		resp, e = c.ecsClient.RunInstances(req)
+		return e
+	})
 	if err != nil {
 		return nil, fmt.Errorf("RunInstances: %w", err)
 	}
@@ -346,15 +396,26 @@ func (c *alibabacloudClient) CreateECSInstance(params CreateInstanceParams) (*Cr
 	instanceID := resp.InstanceIdSets.InstanceIdSet[0]
 	klog.Infof("Created ECS instance %s", instanceID)
 
-	// Propagate the instance tags to every disk created with the instance
-	// (system + data) for cost allocation. RunInstances tags only the instance,
-	// and RunInstancesDataDisk has no per-disk tag field, so we tag the disks
-	// after creation. This is best-effort: the instance already exists, so a
-	// tagging failure must not fail provisioning — log and continue.
+	// Propagate the instance tags to every resource created with the instance —
+	// disks (system + data) and network interfaces (ENIs) — for cost allocation.
+	// RunInstances tags only the instance itself, so finance cannot attribute
+	// storage/network spend by tag unless we stamp the child resources too. This
+	// is best-effort: the instance already exists, so a tagging failure must not
+	// fail provisioning — log and continue.
 	if len(params.Tags) > 0 {
 		c.tagInstanceDisks(params.RegionID, instanceID, params.Tags)
+		c.tagInstanceENIs(params.RegionID, instanceID, params.Tags)
 	}
 	return &CreateInstanceResponse{InstanceID: instanceID}, nil
+}
+
+// toTagResourcesTags converts CAPA tags to the ECS TagResources shape.
+func toTagResourcesTags(tags []Tag) []ecs.TagResourcesTag {
+	out := make([]ecs.TagResourcesTag, len(tags))
+	for i, t := range tags {
+		out[i] = ecs.TagResourcesTag{Key: t.Key, Value: t.Value}
+	}
+	return out
 }
 
 // tagInstanceDisks applies tags to all disks attached to the given instance.
@@ -382,14 +443,52 @@ func (c *alibabacloudClient) tagInstanceDisks(region, instanceID string, tags []
 	treq.RegionId = region
 	treq.ResourceType = "disk"
 	treq.ResourceId = &ids
-	ttags := make([]ecs.TagResourcesTag, len(tags))
-	for i, t := range tags {
-		ttags[i] = ecs.TagResourcesTag{Key: t.Key, Value: t.Value}
-	}
+	ttags := toTagResourcesTags(tags)
 	treq.Tag = &ttags
-	if _, err := c.ecsClient.TagResources(treq); err != nil {
+	if err := retryThrottled("TagResources(disk)", func() error {
+		_, e := c.ecsClient.TagResources(treq)
+		return e
+	}); err != nil {
 		klog.Warningf("tag disks: TagResources(%v): %v", ids, err)
 		return
 	}
 	klog.V(2).Infof("tagged %d disk(s) of instance %s for cost allocation", len(ids), instanceID)
+}
+
+// tagInstanceENIs applies tags to all network interfaces (ENIs) attached to the
+// given instance, so network spend is attributable by tag. Best-effort: every
+// failure is logged and swallowed.
+func (c *alibabacloudClient) tagInstanceENIs(region, instanceID string, tags []Tag) {
+	nreq := ecs.CreateDescribeNetworkInterfacesRequest()
+	nreq.RegionId = region
+	nreq.InstanceId = instanceID
+	nresp, err := c.ecsClient.DescribeNetworkInterfaces(nreq)
+	if err != nil {
+		klog.Warningf("tag enis: DescribeNetworkInterfaces(%s): %v", instanceID, err)
+		return
+	}
+	ids := make([]string, 0, len(nresp.NetworkInterfaceSets.NetworkInterfaceSet))
+	for _, ni := range nresp.NetworkInterfaceSets.NetworkInterfaceSet {
+		if ni.NetworkInterfaceId != "" {
+			ids = append(ids, ni.NetworkInterfaceId)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+
+	treq := ecs.CreateTagResourcesRequest()
+	treq.RegionId = region
+	treq.ResourceType = "eni"
+	treq.ResourceId = &ids
+	ttags := toTagResourcesTags(tags)
+	treq.Tag = &ttags
+	if err := retryThrottled("TagResources(eni)", func() error {
+		_, e := c.ecsClient.TagResources(treq)
+		return e
+	}); err != nil {
+		klog.Warningf("tag enis: TagResources(%v): %v", ids, err)
+		return
+	}
+	klog.V(2).Infof("tagged %d ENI(s) of instance %s for cost allocation", len(ids), instanceID)
 }
