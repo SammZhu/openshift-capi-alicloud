@@ -84,40 +84,53 @@ type InstanceDescription struct {
 // credentials resolved from the in-cluster controller-runtime client.
 type ClientBuilderFunc func(c runtimeclient.Client, region string) (Client, error)
 
-// resolveCredential builds an Alibaba Cloud SDK credential for CAPA.
+// resolveCredential builds an Alibaba Cloud SDK credential for CAPA, preferring
+// an ECS RAM role (auto-rotated STS credentials, no long-lived secret on disk)
+// over static AccessKeys — the least-privilege, rotation-friendly default
+// (P3-CAPA.30). See docs/RAM-POLICY.md for the minimal RAM policy.
 //
-// The Alibaba Cloud Go SDK's NewClientWithOptions does NOT auto-discover
-// credentials when the credential argument is nil — it returns
-// SDK.UnsupportedCredential.  We resolve credentials explicitly here, in
-// this order:
-//
-//  1. AccessKey from environment variables.  Both
-//     ALIBABA_CLOUD_ACCESS_KEY_{ID,SECRET} (the newer
-//     alibabacloud-credentials-go spelling) and the older
-//     ALIBABACLOUD_ACCESS_KEY_{ID,SECRET} are accepted.
-//  2. ECS RAM role from the instance metadata service, when env var
-//     ALIBABA_CLOUD_ECS_METADATA names the role to assume (mirrors the
-//     convention used by cloud-provider-alibaba-cloud).
-//  3. nil — preserves the previous fail-loud behaviour for callers that
-//     want NewClientWithOptions to return UnsupportedCredential.
+// Precedence:
+//  1. Explicitly named ECS RAM role — env ALIBABA_CLOUD_ECS_METADATA.
+//  2. Static AccessKey — env ALIBABA_CLOUD_ACCESS_KEY_{ID,SECRET} (or the older
+//     ALIBABACLOUD_* spelling). Explicit opt-in for dev / non-ECS. NOT rotated:
+//     changing it requires restarting the controller.
+//  3. Default — auto-discover the instance RAM role from the metadata service.
+//     The recommended production path: the SDK fetches and refreshes STS
+//     credentials automatically. Fails at first API call if the controller ECS
+//     has no RAM role attached.
 func resolveCredential() auth.Credential {
-	ak := firstNonEmpty("ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABACLOUD_ACCESS_KEY_ID")
-	sk := firstNonEmpty("ALIBABA_CLOUD_ACCESS_KEY_SECRET", "ALIBABACLOUD_ACCESS_KEY_SECRET")
-	if ak != "" && sk != "" {
-		klog.V(2).Info("alibaba: using AccessKey credential from environment")
-		return credentials.NewAccessKeyCredential(ak, sk)
-	}
-	if role := os.Getenv("ALIBABA_CLOUD_ECS_METADATA"); role != "" {
-		klog.V(2).Infof("alibaba: using ECS RAM role credential: %s", role)
+	return resolveCredentialFrom(os.Getenv)
+}
+
+// resolveCredentialFrom is the testable core (env lookup injected).
+func resolveCredentialFrom(getenv func(string) string) auth.Credential {
+	if role := getenv("ALIBABA_CLOUD_ECS_METADATA"); role != "" {
+		klog.V(2).Infof("alibaba: credential source = ECS RAM role (explicit): %s", role)
 		return credentials.NewEcsRamRoleCredential(role)
 	}
-	klog.Warning("alibaba: no credentials in environment; SDK will return UnsupportedCredential")
-	return nil
+
+	ak := firstNonEmptyFrom(getenv, "ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABACLOUD_ACCESS_KEY_ID")
+	sk := firstNonEmptyFrom(getenv, "ALIBABA_CLOUD_ACCESS_KEY_SECRET", "ALIBABACLOUD_ACCESS_KEY_SECRET")
+	if ak != "" && sk != "" {
+		klog.V(2).Info("alibaba: credential source = static AccessKey from environment " +
+			"(no auto-rotation; prefer an ECS RAM role in production)")
+		return credentials.NewAccessKeyCredential(ak, sk)
+	}
+	if (ak == "") != (sk == "") {
+		klog.Warning("alibaba: only one of ACCESS_KEY_ID/SECRET set; ignoring partial AccessKey")
+	}
+
+	klog.V(2).Info("alibaba: credential source = ECS RAM role (auto-discovered from metadata)")
+	return credentials.NewEcsRamRoleCredential("")
 }
 
 func firstNonEmpty(keys ...string) string {
+	return firstNonEmptyFrom(os.Getenv, keys...)
+}
+
+func firstNonEmptyFrom(getenv func(string) string, keys ...string) string {
 	for _, k := range keys {
-		if v := os.Getenv(k); v != "" {
+		if v := getenv(k); v != "" {
 			return v
 		}
 	}
