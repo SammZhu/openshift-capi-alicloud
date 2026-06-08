@@ -272,7 +272,14 @@ spec:
         label:
           app: capa-controller-manager
         spec:
-          replicas: 1
+          # HA (P4-OPS.1): 2 replicas + leader election; the webhook server runs in
+          # every replica so admission stays available across drains/rollouts.
+          replicas: 2
+          strategy:
+            type: RollingUpdate
+            rollingUpdate:
+              maxUnavailable: 1
+              maxSurge: 1
           selector:
             matchLabels:
               app: capa-controller-manager
@@ -283,6 +290,15 @@ spec:
             spec:
               serviceAccountName: capa-controller-manager
               terminationGracePeriodSeconds: 10
+              affinity:
+                podAntiAffinity:
+                  preferredDuringSchedulingIgnoredDuringExecution:
+                    - weight: 100
+                      podAffinityTerm:
+                        topologyKey: kubernetes.io/hostname
+                        labelSelector:
+                          matchLabels:
+                            app: capa-controller-manager
               containers:
               - name: manager
                 image: quay.io/samzhu/openshift-capi-alicloud:v0.1.12
