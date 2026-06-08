@@ -94,6 +94,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Preflight: refuse to run alongside two Cluster API cores. A self-bundled core
+	// (capi-system) and the OCP-hosted core (cluster-capi-operator,
+	// openshift-cluster-api) are mutually exclusive — they fight over the shared
+	// cluster.x-k8s.io CRDs/webhooks/leader election. Use the API reader (the
+	// manager cache is not started yet). Single core (bundled or reused) is fine
+	// (P3-CAPA.29 / #79).
+	if namespaces, err := infracontroller.DetectCAPICoreNamespaces(ctx, mgr.GetAPIReader()); err != nil {
+		setupLog.Info("CAPI core coexistence preflight: unable to list Deployments, skipping", "error", err.Error())
+	} else if infracontroller.ClassifyCAPICore(namespaces) == infracontroller.CAPICoreConflict {
+		setupLog.Error(nil, "Multiple Cluster API cores detected — a self-bundled core and the "+
+			"OCP-hosted core (cluster-capi-operator) cannot coexist; they fight over the cluster.x-k8s.io "+
+			"CRDs/webhooks/leader election. Deploy provider-only against the OCP-hosted core, or remove it "+
+			"and keep the self-bundled core, then restart.", "namespaces", namespaces)
+		os.Exit(1)
+	}
+
 	if err = (&infracontroller.AlibabaCloudClusterReconciler{
 		Client:                    mgr.GetClient(),
 		Scheme:                    mgr.GetScheme(),

@@ -32,6 +32,7 @@ result. Deterministic and race-free — no `Eventually` polling.
 | Cluster | BYO endpoint → finalizer + Ready=True | ✅ |
 | Cluster | paused annotation → reconcile skipped, no finalizer | ✅ |
 | Cluster | CCM preflight: Node stuck with uninitialized taint → CloudControllerManagerReady=False; taint cleared → True (P3-CAPA.27) | ✅ |
+| Cluster | CAPI core coexistence: single core → ClusterAPICoreReady=True (Bundled `capi-system` / Reused `openshift-cluster-api`); two cores → False/MultipleCAPICoresConflict + Warning Event (P3-CAPA.29) | ✅ |
 | Cluster | (missing endpoint → ControlPlaneEndpointMissing) | covered by unit tests — unreachable via API (CRD enforces `minProperties:1` on `controlPlaneEndpoint`) |
 | Machine | infra cluster not Ready → finalizer + Ready=False/ClusterInfrastructureNotReady + requeue | ✅ |
 | Machine | cluster Ready, no bootstrap (ConfigRef set, DataSecretName nil) → Ready=False/WaitingForBootstrapData + requeue | ✅ |

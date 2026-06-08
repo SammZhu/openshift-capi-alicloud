@@ -18,6 +18,24 @@ const (
 	NodesAwaitingCloudProviderReason = "NodesAwaitingCloudProvider"
 	// CloudControllerManagerHealthyReason: no stuck-uninitialized Nodes observed.
 	CloudControllerManagerHealthyReason = "CloudControllerManagerHealthy"
+
+	// ClusterAPICoreReadyCondition reports the coexistence state of this provider
+	// with the Cluster API core (cluster.x-k8s.io) controllers. This provider is an
+	// infrastructure provider only — it never embeds core. Core is either
+	// self-bundled (clusterctl, namespace capi-system) or OCP-hosted (managed by
+	// cluster-capi-operator in openshift-cluster-api). Exactly one core must run;
+	// two cores fight over the shared CRDs/webhooks/leader election. The startup
+	// preflight fails fast on a conflict, and this condition surfaces the steady
+	// state for observability (P3-CAPA.29).
+	ClusterAPICoreReadyCondition = "ClusterAPICoreReady"
+
+	// BundledCAPICoreReason: a single self-bundled CAPI core (non-OCP namespace).
+	BundledCAPICoreReason = "BundledCAPICore"
+	// ReusingHostedCAPICoreReason: a single OCP-hosted CAPI core, reused provider-only.
+	ReusingHostedCAPICoreReason = "ReusingHostedCAPICore"
+	// MultipleCAPICoresConflictReason: CAPI core detected in two or more namespaces
+	// (self-bundled vs OCP-hosted) — mutually exclusive, they will conflict.
+	MultipleCAPICoresConflictReason = "MultipleCAPICoresConflict"
 )
 
 // InstanceState describes the state of an Alibaba Cloud ECS instance.

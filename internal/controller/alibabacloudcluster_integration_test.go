@@ -7,9 +7,12 @@ import (
 	"sync/atomic"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -157,6 +160,110 @@ func TestIntegration_Cluster_CCMPreflight(t *testing.T) {
 	if cond == nil || cond.Status != metav1.ConditionTrue {
 		t.Fatalf("expected CloudControllerManagerReady=True after taint cleared, got %+v", cond)
 	}
+}
+
+// ensureNamespace idempotently creates a cluster-scoped namespace by an exact
+// name (capi-system / openshift-cluster-api), tolerating AlreadyExists so parallel
+// or repeated tests don't collide. Left in place (empty namespaces are harmless).
+func ensureNamespace(t *testing.T, name string) {
+	t.Helper()
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	if err := k8sClient.Create(reconcileCtx(), ns); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create namespace %q: %v", name, err)
+	}
+}
+
+// createCAPICore stands up a stand-in Cluster API core controller-manager
+// Deployment carrying the cluster.x-k8s.io/provider=cluster-api label (the signal
+// the coexistence preflight keys on) in the given namespace, and registers
+// cleanup. The pod template is never scheduled — envtest has no kubelet.
+func createCAPICore(t *testing.T, namespace string) {
+	t.Helper()
+	ensureNamespace(t, namespace)
+	labels := map[string]string{"cluster.x-k8s.io/provider": "cluster-api"}
+	d := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: "capi-controller-manager", Namespace: namespace, Labels: labels},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "manager", Image: "example/capi:latest"}}},
+			},
+		},
+	}
+	if err := k8sClient.Create(reconcileCtx(), d); err != nil {
+		t.Fatalf("create CAPI core deployment in %q: %v", namespace, err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(reconcileCtx(), d) })
+}
+
+// A single self-bundled CAPI core (non-OCP namespace) reports
+// ClusterAPICoreReady=True / BundledCAPICore.
+func TestIntegration_Cluster_CAPICore_Bundled(t *testing.T) {
+	ns := freshNamespace(t)
+	createCAPICore(t, "capi-system")
+
+	ali := makeOwnedCluster(t, ns, nil)
+	r := newClusterReconciler(&fakeclient.FakeClient{})
+	reconcileCluster(t, r, ali)
+
+	cond := apimeta.FindStatusCondition(getCluster(t, client.ObjectKeyFromObject(ali)).Status.Conditions, infrav1.ClusterAPICoreReadyCondition)
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != infrav1.BundledCAPICoreReason {
+		t.Fatalf("expected ClusterAPICoreReady=True/BundledCAPICore, got %+v", cond)
+	}
+}
+
+// A single OCP-hosted CAPI core (openshift-cluster-api) reports
+// ClusterAPICoreReady=True / ReusingHostedCAPICore.
+func TestIntegration_Cluster_CAPICore_Reused(t *testing.T) {
+	ns := freshNamespace(t)
+	createCAPICore(t, "openshift-cluster-api")
+
+	ali := makeOwnedCluster(t, ns, nil)
+	r := newClusterReconciler(&fakeclient.FakeClient{})
+	reconcileCluster(t, r, ali)
+
+	cond := apimeta.FindStatusCondition(getCluster(t, client.ObjectKeyFromObject(ali)).Status.Conditions, infrav1.ClusterAPICoreReadyCondition)
+	if cond == nil || cond.Status != metav1.ConditionTrue || cond.Reason != infrav1.ReusingHostedCAPICoreReason {
+		t.Fatalf("expected ClusterAPICoreReady=True/ReusingHostedCAPICore, got %+v", cond)
+	}
+}
+
+// Two CAPI cores in distinct namespaces (self-bundled + OCP-hosted) is a
+// mutual-exclusion conflict: ClusterAPICoreReady=False / MultipleCAPICoresConflict
+// plus a Warning Event.
+func TestIntegration_Cluster_CAPICore_Conflict(t *testing.T) {
+	ns := freshNamespace(t)
+	createCAPICore(t, "capi-system")
+	createCAPICore(t, "openshift-cluster-api")
+
+	ali := makeOwnedCluster(t, ns, nil)
+	r := newClusterReconciler(&fakeclient.FakeClient{})
+	recorder := record.NewFakeRecorder(10)
+	r.Recorder = recorder
+	reconcileCluster(t, r, ali)
+
+	cond := apimeta.FindStatusCondition(getCluster(t, client.ObjectKeyFromObject(ali)).Status.Conditions, infrav1.ClusterAPICoreReadyCondition)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != infrav1.MultipleCAPICoresConflictReason {
+		t.Fatalf("expected ClusterAPICoreReady=False/MultipleCAPICoresConflict, got %+v", cond)
+	}
+	select {
+	case ev := <-recorder.Events:
+		if !contains(ev, infrav1.MultipleCAPICoresConflictReason) {
+			t.Errorf("expected conflict Event to mention %q, got %q", infrav1.MultipleCAPICoresConflictReason, ev)
+		}
+	default:
+		t.Error("expected a Warning Event on CAPI core conflict, got none")
+	}
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
 
 // A paused Cluster short-circuits reconciliation: no finalizer is added.

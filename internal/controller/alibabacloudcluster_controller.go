@@ -56,6 +56,7 @@ type AlibabaCloudClusterReconciler struct {
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters;clusters/status,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *AlibabaCloudClusterReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, options controller.Options) error {
@@ -107,6 +108,7 @@ func (r *AlibabaCloudClusterReconciler) Reconcile(ctx context.Context, req ctrl.
 			patch.WithOwnedConditions{Conditions: []string{
 				clusterv1.ReadyCondition,
 				infrav1.CloudControllerManagerReadyCondition,
+				infrav1.ClusterAPICoreReadyCondition,
 			}},
 		); err != nil && reterr == nil {
 			reterr = err
@@ -187,6 +189,11 @@ func (r *AlibabaCloudClusterReconciler) reconcileNormal(ctx context.Context, clu
 	// uninitialized are diagnosable, instead of hanging silently (P3-CAPA.27).
 	r.checkCloudControllerManager(ctx, alibabaCluster)
 
+	// Runtime preflight: report which CAPI core we coexist with (self-bundled vs
+	// OCP-hosted), and flag a dual-core conflict. The startup preflight already
+	// fails fast on conflict; this is the observable steady-state mirror (P3-CAPA.29).
+	r.checkClusterAPICore(ctx, alibabaCluster)
+
 	conditions.Set(alibabaCluster, metav1.Condition{
 		Type:   clusterv1.ReadyCondition,
 		Status: metav1.ConditionTrue,
@@ -249,6 +256,59 @@ func (r *AlibabaCloudClusterReconciler) checkCloudControllerManager(ctx context.
 		Status: metav1.ConditionTrue,
 		Reason: infrav1.CloudControllerManagerHealthyReason,
 	})
+}
+
+// checkClusterAPICore sets the ClusterAPICoreReady condition by detecting which
+// CAPI core controller-managers are running (by the cluster.x-k8s.io/provider
+// label). One core is healthy — Bundled (self-installed) or Reused (OCP-hosted);
+// two or more across distinct namespaces is a mutual-exclusion conflict that gets
+// a False condition + Warning Event. It never fails the reconcile (the startup
+// preflight is the hard gate); a missing/unlistable core is left untouched so the
+// existing CRD preflight remains the authority (P3-CAPA.29).
+func (r *AlibabaCloudClusterReconciler) checkClusterAPICore(ctx context.Context, alibabaCluster *infrav1.AlibabaCloudCluster) {
+	log := ctrl.LoggerFrom(ctx)
+
+	namespaces, err := DetectCAPICoreNamespaces(ctx, r.Client)
+	if err != nil {
+		log.Info("CAPI core preflight: unable to list Deployments, skipping", "error", err.Error())
+		return
+	}
+
+	switch ClassifyCAPICore(namespaces) {
+	case CAPICoreConflict:
+		msg := fmt.Sprintf("Cluster API core (cluster.x-k8s.io) detected in multiple namespaces %v — "+
+			"a self-bundled core and the OCP-hosted core (cluster-capi-operator) are mutually exclusive "+
+			"and will fight over the shared CRDs/webhooks/leader election. Run provider-only against the "+
+			"OCP-hosted core, or remove the OCP-hosted core and keep the self-bundled one.", namespaces)
+		conditions.Set(alibabaCluster, metav1.Condition{
+			Type:    infrav1.ClusterAPICoreReadyCondition,
+			Status:  metav1.ConditionFalse,
+			Reason:  infrav1.MultipleCAPICoresConflictReason,
+			Message: msg,
+		})
+		if r.Recorder != nil {
+			r.Recorder.Event(alibabaCluster, corev1.EventTypeWarning, infrav1.MultipleCAPICoresConflictReason, msg)
+		}
+		log.Info("CAPI core preflight conflict", "namespaces", namespaces)
+	case CAPICoreReused:
+		conditions.Set(alibabaCluster, metav1.Condition{
+			Type:    infrav1.ClusterAPICoreReadyCondition,
+			Status:  metav1.ConditionTrue,
+			Reason:  infrav1.ReusingHostedCAPICoreReason,
+			Message: fmt.Sprintf("reusing the OCP-hosted Cluster API core in %q (provider-only)", ocpHostedCAPINamespace),
+		})
+	case CAPICoreBundled:
+		conditions.Set(alibabaCluster, metav1.Condition{
+			Type:    infrav1.ClusterAPICoreReadyCondition,
+			Status:  metav1.ConditionTrue,
+			Reason:  infrav1.BundledCAPICoreReason,
+			Message: fmt.Sprintf("using the self-bundled Cluster API core in %q", namespaces[0]),
+		})
+	case CAPICoreNone:
+		// No core controller Deployment visible. Leave the condition unset: the
+		// startup RESTMapping preflight already gates on the CAPI core CRDs, and a
+		// restrictive RBAC could simply hide Deployments from us.
+	}
 }
 
 func (r *AlibabaCloudClusterReconciler) reconcileDelete(ctx context.Context, alibabaCluster *infrav1.AlibabaCloudCluster) (ctrl.Result, error) {
