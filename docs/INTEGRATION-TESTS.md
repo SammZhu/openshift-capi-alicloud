@@ -32,9 +32,10 @@ result. Deterministic and race-free — no `Eventually` polling.
 | Cluster | BYO endpoint → finalizer + Ready=True | ✅ |
 | Cluster | paused annotation → reconcile skipped, no finalizer | ✅ |
 | Cluster | (missing endpoint → ControlPlaneEndpointMissing) | covered by unit tests — unreachable via API (CRD enforces `minProperties:1` on `controlPlaneEndpoint`) |
-| Machine | bootstrap data → CreateECSInstance → providerID + finalizer | ⏳ planned |
-| Machine | missing boot image → terminal failure | ⏳ planned |
-| Machine | paused → skipped | ⏳ planned |
+| Machine | infra cluster not Ready → finalizer + Ready=False/ClusterInfrastructureNotReady + requeue | ✅ |
+| Machine | cluster Ready, no bootstrap (ConfigRef set, DataSecretName nil) → Ready=False/WaitingForBootstrapData + requeue | ✅ |
+| Machine | paused annotation → reconcile skipped, no finalizer | ✅ |
+| Machine | bootstrap ready → CreateECSInstance → providerID set | covered by `createInstance` unit tests; full-Reconcile happy path ⏳ planned |
 | Machine | delete → waits for Terminated before finalizer removal | ⏳ planned |
 | CSR | CAPA-backed node CSR auto-approved | ⏳ planned |
 
