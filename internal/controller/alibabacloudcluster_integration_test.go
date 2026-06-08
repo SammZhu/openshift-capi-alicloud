@@ -117,10 +117,53 @@ func TestIntegration_Cluster_ReadyWithBYOEndpoint(t *testing.T) {
 	}
 }
 
+// The CCM preflight flags Nodes stuck with the cloud-provider uninitialized taint
+// (CCM missing) as CloudControllerManagerReady=False; a clean Node keeps it True.
+func TestIntegration_Cluster_CCMPreflight(t *testing.T) {
+	ns := freshNamespace(t)
+
+	stuckNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "worker-stuck-" + ns},
+		Spec: corev1.NodeSpec{Taints: []corev1.Taint{{
+			Key:    "node.cloudprovider.kubernetes.io/uninitialized",
+			Effect: corev1.TaintEffectNoSchedule,
+		}}},
+	}
+	if err := k8sClient.Create(reconcileCtx(), stuckNode); err != nil {
+		t.Fatalf("create stuck node: %v", err)
+	}
+	t.Cleanup(func() { _ = k8sClient.Delete(reconcileCtx(), stuckNode) })
+
+	ali := makeOwnedCluster(t, ns, nil)
+	r := newClusterReconciler(&fakeclient.FakeClient{})
+	// CCMGracePeriod=0 → a freshly-created stuck node is flagged immediately.
+
+	reconcileCluster(t, r, ali)
+
+	got := getCluster(t, client.ObjectKeyFromObject(ali))
+	cond := apimeta.FindStatusCondition(got.Status.Conditions, infrav1.CloudControllerManagerReadyCondition)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != infrav1.NodesAwaitingCloudProviderReason {
+		t.Fatalf("expected CloudControllerManagerReady=False/NodesAwaitingCloudProvider, got %+v", cond)
+	}
+
+	// Remove the taint → next reconcile reports the CCM healthy.
+	stuckNode.Spec.Taints = nil
+	if err := k8sClient.Update(reconcileCtx(), stuckNode); err != nil {
+		t.Fatalf("clear taint: %v", err)
+	}
+	reconcileCluster(t, r, ali)
+	got = getCluster(t, client.ObjectKeyFromObject(ali))
+	cond = apimeta.FindStatusCondition(got.Status.Conditions, infrav1.CloudControllerManagerReadyCondition)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("expected CloudControllerManagerReady=True after taint cleared, got %+v", cond)
+	}
+}
+
 // A paused Cluster short-circuits reconciliation: no finalizer is added.
 // (The ControlPlaneEndpointMissing branch is unreachable via the API — the CRD's
-//  minProperties:1 on controlPlaneEndpoint enforces BYO endpoint at creation — so
-//  it is covered by the unit tests, not here.)
+//
+//	minProperties:1 on controlPlaneEndpoint enforces BYO endpoint at creation — so
+//	it is covered by the unit tests, not here.)
 func TestIntegration_Cluster_PausedSkips(t *testing.T) {
 	ns := freshNamespace(t)
 	ali := makeOwnedCluster(t, ns, func(c *infrav1.AlibabaCloudCluster) {

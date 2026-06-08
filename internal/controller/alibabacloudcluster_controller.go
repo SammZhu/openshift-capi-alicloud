@@ -3,11 +3,14 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util"
 	"sigs.k8s.io/cluster-api/util/annotations"
@@ -24,18 +27,35 @@ import (
 	alibabaClient "github.com/SammZhu/openshift-capi-alicloud/pkg/client"
 )
 
+// DefaultCCMGracePeriod is how long a Node may carry the cloud-provider
+// uninitialized taint before we treat it as evidence that the CCM is missing
+// (vs. a node that just joined and the CCM hasn't reached yet).
+const DefaultCCMGracePeriod = 5 * time.Minute
+
+// uninitializedTaintKey is the taint the kubelet sets (with
+// --cloud-provider=external) and the cloud-controller-manager removes once it has
+// initialized the Node. Defined locally to avoid a k8s.io/cloud-provider dep.
+const uninitializedTaintKey = "node.cloudprovider.kubernetes.io/uninitialized"
+
 // AlibabaCloudClusterReconciler reconciles an AlibabaCloudCluster object.
 type AlibabaCloudClusterReconciler struct {
 	client.Client
 	Scheme                    *runtime.Scheme
 	Log                       logr.Logger
+	Recorder                  record.EventRecorder
 	AlibabaCloudClientBuilder alibabaClient.ClientBuilderFunc
+	// CCMGracePeriod is how long a Node may carry the uninitialized taint before
+	// the preflight flags a missing CCM. main sets it to ccmGracePeriod; zero means
+	// flag immediately (used by tests).
+	CCMGracePeriod time.Duration
 }
 
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=alibabacloudclusters,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=alibabacloudclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=alibabacloudclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters;clusters/status,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *AlibabaCloudClusterReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, options controller.Options) error {
@@ -84,7 +104,10 @@ func (r *AlibabaCloudClusterReconciler) Reconcile(ctx context.Context, req ctrl.
 	}
 	defer func() {
 		if err := patchHelper.Patch(ctx, alibabaCluster,
-			patch.WithOwnedConditions{Conditions: []string{clusterv1.ReadyCondition}},
+			patch.WithOwnedConditions{Conditions: []string{
+				clusterv1.ReadyCondition,
+				infrav1.CloudControllerManagerReadyCondition,
+			}},
 		); err != nil && reterr == nil {
 			reterr = err
 		}
@@ -159,6 +182,11 @@ func (r *AlibabaCloudClusterReconciler) reconcileNormal(ctx context.Context, clu
 		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 
+	// Runtime preflight: CAPA never initializes Nodes — the CCM does. Surface a
+	// missing/broken CCM as a dedicated condition + Event so workers stuck
+	// uninitialized are diagnosable, instead of hanging silently (P3-CAPA.27).
+	r.checkCloudControllerManager(ctx, alibabaCluster)
+
 	conditions.Set(alibabaCluster, metav1.Condition{
 		Type:   clusterv1.ReadyCondition,
 		Status: metav1.ConditionTrue,
@@ -167,6 +195,60 @@ func (r *AlibabaCloudClusterReconciler) reconcileNormal(ctx context.Context, clu
 	alibabaCluster.Status.Ready = true
 	log.Info("AlibabaCloudCluster reconciled successfully")
 	return ctrl.Result{}, nil
+}
+
+// checkCloudControllerManager sets the CloudControllerManagerReady condition by
+// looking for worker Nodes stuck with the cloud-provider uninitialized taint past
+// the grace period — the canonical symptom of a missing/broken CCM. It never fails
+// the reconcile (informational/degraded), and skips recently-joined Nodes so a CCM
+// that simply hasn't caught up yet is not flagged.
+func (r *AlibabaCloudClusterReconciler) checkCloudControllerManager(ctx context.Context, alibabaCluster *infrav1.AlibabaCloudCluster) {
+	log := ctrl.LoggerFrom(ctx)
+
+	nodes := &corev1.NodeList{}
+	if err := r.List(ctx, nodes); err != nil {
+		log.Info("CCM preflight: unable to list Nodes, skipping", "error", err.Error())
+		return
+	}
+
+	cutoff := time.Now().Add(-r.CCMGracePeriod)
+	var stuck []string
+	for i := range nodes.Items {
+		n := &nodes.Items[i]
+		if n.CreationTimestamp.Time.After(cutoff) {
+			continue // recently joined — give the CCM time to reach it
+		}
+		for _, t := range n.Spec.Taints {
+			if t.Key == uninitializedTaintKey {
+				stuck = append(stuck, n.Name)
+				break
+			}
+		}
+	}
+
+	if len(stuck) > 0 {
+		msg := fmt.Sprintf("%d Node(s) stuck with the %q taint for over %s — is the Alibaba "+
+			"cloud-controller-manager (CCM) running? CAPA does not initialize Nodes; without the "+
+			"CCM, workers never become Ready. Nodes: %v",
+			len(stuck), uninitializedTaintKey, r.CCMGracePeriod, stuck)
+		conditions.Set(alibabaCluster, metav1.Condition{
+			Type:    infrav1.CloudControllerManagerReadyCondition,
+			Status:  metav1.ConditionFalse,
+			Reason:  infrav1.NodesAwaitingCloudProviderReason,
+			Message: msg,
+		})
+		if r.Recorder != nil {
+			r.Recorder.Event(alibabaCluster, corev1.EventTypeWarning, infrav1.NodesAwaitingCloudProviderReason, msg)
+		}
+		log.Info("CCM preflight degraded", "stuckNodes", stuck)
+		return
+	}
+
+	conditions.Set(alibabaCluster, metav1.Condition{
+		Type:   infrav1.CloudControllerManagerReadyCondition,
+		Status: metav1.ConditionTrue,
+		Reason: infrav1.CloudControllerManagerHealthyReason,
+	})
 }
 
 func (r *AlibabaCloudClusterReconciler) reconcileDelete(ctx context.Context, alibabaCluster *infrav1.AlibabaCloudCluster) (ctrl.Result, error) {

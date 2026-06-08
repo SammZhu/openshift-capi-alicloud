@@ -3,6 +3,23 @@ package v1beta1
 // AlibabaCloudMachineProviderConditionType is a valid value for AlibabaCloudMachineProviderCondition.Type.
 type AlibabaCloudMachineProviderConditionType string
 
+const (
+	// CloudControllerManagerReadyCondition reports whether the Alibaba
+	// cloud-controller-manager (CCM) appears to be initializing Nodes. CAPA never
+	// touches Node objects — the CCM removes the node.cloudprovider.kubernetes.io/
+	// uninitialized taint and sets providerID/addresses/zone. If worker Nodes stay
+	// uninitialized past the grace period, CCM is missing or broken and workers
+	// will never become Ready; this condition surfaces that runtime dependency gap
+	// loudly instead of letting workers hang silently.
+	CloudControllerManagerReadyCondition = "CloudControllerManagerReady"
+
+	// NodesAwaitingCloudProviderReason: one or more Nodes have been stuck with the
+	// uninitialized taint past the grace period (CCM likely absent).
+	NodesAwaitingCloudProviderReason = "NodesAwaitingCloudProvider"
+	// CloudControllerManagerHealthyReason: no stuck-uninitialized Nodes observed.
+	CloudControllerManagerHealthyReason = "CloudControllerManagerHealthy"
+)
+
 // InstanceState describes the state of an Alibaba Cloud ECS instance.
 type InstanceState string
 

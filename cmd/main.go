@@ -21,6 +21,7 @@ import (
 	"os"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/klog/v2"
@@ -82,11 +83,24 @@ func main() {
 
 	ctx := ctrl.SetupSignalHandler()
 
+	// Preflight: this is a CAPI infrastructure provider — it cannot function
+	// without the Cluster API core CRDs (cluster.x-k8s.io). Fail fast with a clear
+	// message instead of a cryptic watch/cache error if CAPI core is not installed.
+	if _, err := mgr.GetRESTMapper().RESTMapping(
+		schema.GroupKind{Group: clusterv1.GroupVersion.Group, Kind: "Machine"},
+	); err != nil {
+		setupLog.Error(err, "Cluster API core CRDs (cluster.x-k8s.io) not found — "+
+			"install cluster-api (clusterctl init / the CAPI operator) before this provider")
+		os.Exit(1)
+	}
+
 	if err = (&infracontroller.AlibabaCloudClusterReconciler{
 		Client:                    mgr.GetClient(),
 		Scheme:                    mgr.GetScheme(),
 		Log:                       ctrl.Log.WithName("controllers").WithName("AlibabaCloudCluster"),
+		Recorder:                  mgr.GetEventRecorderFor("alibabacloudcluster-controller"),
 		AlibabaCloudClientBuilder: alibabaClient.NewCAPIClient,
+		CCMGracePeriod:            infracontroller.DefaultCCMGracePeriod,
 	}).SetupWithManager(ctx, mgr, controller.Options{MaxConcurrentReconciles: concurrency}); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AlibabaCloudCluster")
 		os.Exit(1)
