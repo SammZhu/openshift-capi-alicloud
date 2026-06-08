@@ -74,6 +74,28 @@ test: ## Run unit tests
 test-race: ## Run unit tests with race detector
 	CGO_ENABLED=1 go test -race -count=1 ./...
 
+# ── Integration tests (envtest: real kube-apiserver + etcd, no cloud) ────────────
+# Gated behind the `integration` build tag so plain `make test` stays asset-free
+# (works air-gapped). `make test-integration` boots a real apiserver and drives
+# the reconcilers against it; Alibaba cloud calls are served by pkg/client/fake.
+ENVTEST_K8S_VERSION ?= 1.31.0
+ENVTEST = $(shell pwd)/bin/setup-envtest
+# CAPI core CRDs (Cluster/Machine) come from the cluster-api module in the cache.
+CAPI_CRD_DIR := $(shell go list -m -f '{{.Dir}}' sigs.k8s.io/cluster-api)/config/crd/bases
+
+.PHONY: setup-envtest
+setup-envtest: ## Download setup-envtest + the apiserver/etcd test binaries
+	@if ! [ -x "$(ENVTEST)" ]; then \
+		echo "Installing setup-envtest..."; \
+		GOBIN=$(shell pwd)/bin go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest; \
+	fi
+
+.PHONY: test-integration
+test-integration: setup-envtest ## Run envtest integration tests (build tag: integration)
+	KUBEBUILDER_ASSETS="$$('$(ENVTEST)' use $(ENVTEST_K8S_VERSION) --bin-dir '$(shell pwd)/bin' -p path)" \
+	CAPI_CRD_DIR="$(CAPI_CRD_DIR)" \
+	go test -tags integration -count=1 -v ./internal/controller/...
+
 # ── Code quality ───────────────────────────────────────────────────────────────
 .PHONY: fmt
 fmt: ## Run go fmt
