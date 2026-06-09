@@ -96,6 +96,16 @@ test-integration: setup-envtest ## Run envtest integration tests (build tag: int
 	CAPI_CRD_DIR="$(CAPI_CRD_DIR)" \
 	go test -tags integration -count=1 -v ./internal/controller/...
 
+# Verify the vendored CAPI core manifest (in the sibling alibaba-openshift repo)
+# applies cleanly against a real apiserver — air-gap-independent risk reduction
+# before a live run. Override CORE_MANIFEST if the deploy repo is elsewhere.
+CORE_MANIFEST ?= $(shell pwd)/../alibaba-openshift/custom_manifests/cluster-api-core.yaml
+.PHONY: test-core-manifest
+test-core-manifest: setup-envtest ## envtest: verify cluster-api-core.yaml applies cleanly
+	KUBEBUILDER_ASSETS="$$('$(ENVTEST)' use $(ENVTEST_K8S_VERSION) --bin-dir '$(shell pwd)/bin' -p path)" \
+	CORE_MANIFEST="$(CORE_MANIFEST)" \
+	go test -tags integration -count=1 -v ./test/coremanifest/
+
 # ── Code quality ───────────────────────────────────────────────────────────────
 .PHONY: fmt
 fmt: ## Run go fmt
