@@ -200,6 +200,11 @@ func (r *AlibabaCloudClusterReconciler) reconcileNormal(ctx context.Context, clu
 		Reason: "AlibabaCloudClusterReady",
 	})
 	alibabaCluster.Status.Ready = true
+	// v1beta2 infra-cluster contract: CAPI core reads readiness from
+	// status.initialization.provisioned (status.ready is ignored under v1beta2),
+	// then sets Cluster.status.infrastructureReady and copies failureDomains.
+	provisioned := true
+	alibabaCluster.Status.Initialization = &infrav1.AlibabaCloudClusterInitializationStatus{Provisioned: &provisioned}
 	log.Info("AlibabaCloudCluster reconciled successfully")
 	return ctrl.Result{}, nil
 }

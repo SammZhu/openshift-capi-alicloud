@@ -16,6 +16,7 @@ type AlibabaCloudClusterTemplateResource struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:path=alibabacloudclustertemplates,scope=Namespaced,categories=cluster-api
+// +kubebuilder:metadata:labels=cluster.x-k8s.io/v1beta2=v1beta1
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // AlibabaCloudClusterTemplate is the Schema for the alibabacloudclustertemplates API.

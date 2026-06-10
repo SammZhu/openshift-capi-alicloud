@@ -220,6 +220,11 @@ func (r *AlibabaCloudMachineReconciler) reconcileNormal(
 		Reason: "AlibabaCloudMachineReady",
 	})
 	alibabaCloudMachine.Status.Ready = true
+	// v1beta2 infra-machine contract: CAPI core reads readiness from
+	// status.initialization.provisioned (status.ready is ignored under v1beta2)
+	// to mark the owning Machine's infrastructure ready (gates nodeRef/bootstrap).
+	provisioned := true
+	alibabaCloudMachine.Status.Initialization = &infrav1.AlibabaCloudMachineInitializationStatus{Provisioned: &provisioned}
 	log.Info("AlibabaCloudMachine reconciled successfully", "instanceID", alibabaCloudMachine.Status.InstanceID)
 	return ctrl.Result{}, nil
 }

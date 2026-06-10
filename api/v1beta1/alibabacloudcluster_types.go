@@ -101,11 +101,29 @@ type IgnitionOSSRef struct {
 	Key      string `json:"key"`
 }
 
+// AlibabaCloudClusterInitializationStatus carries the v1beta2 infra-cluster
+// contract's initialization signal. CAPI core (>= v1.11, v1beta2 contract) reads
+// readiness from status.initialization.provisioned — NOT status.ready, which the
+// v1beta2 contract ignores — to set Cluster.status.infrastructureReady. Without
+// this, the owning Cluster never becomes provisioned and downstream Machines hang
+// on "waiting for cluster infrastructure to be ready".
+type AlibabaCloudClusterInitializationStatus struct {
+	// Provisioned is true once the cluster infrastructure is fully provisioned.
+	// +optional
+	Provisioned *bool `json:"provisioned,omitempty"`
+}
+
 // AlibabaCloudClusterStatus defines the observed state of AlibabaCloudCluster.
 type AlibabaCloudClusterStatus struct {
 	// Ready indicates that the cluster infrastructure is ready.
 	// +kubebuilder:default=false
 	Ready bool `json:"ready"`
+
+	// Initialization provides the v1beta2 infra-cluster contract's provisioned
+	// signal (status.initialization.provisioned); CAPI core uses it — not
+	// status.ready — to drive Cluster.status.infrastructureReady.
+	// +optional
+	Initialization *AlibabaCloudClusterInitializationStatus `json:"initialization,omitempty"`
 
 	// VpcID is the ID of the VPC created or adopted for the cluster.
 	// +optional
@@ -137,6 +155,7 @@ type AlibabaCloudClusterStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=alibabacloudclusters,scope=Namespaced,categories=cluster-api
+// +kubebuilder:metadata:labels=cluster.x-k8s.io/v1beta2=v1beta1
 // +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".metadata.labels['cluster\\.x-k8s\\.io/cluster-name']"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.ready"
 // +kubebuilder:printcolumn:name="Region",type="string",JSONPath=".spec.region"

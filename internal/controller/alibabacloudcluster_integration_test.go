@@ -120,6 +120,46 @@ func TestIntegration_Cluster_ReadyWithBYOEndpoint(t *testing.T) {
 	}
 }
 
+// v1beta2 infra-cluster contract compliance (guards the #62 regression where
+// caworkers' Cluster.status.failureDomains stayed empty and workers never spread):
+//   - status.initialization.provisioned MUST be set true — under the v1beta2
+//     contract CAPI core reads readiness from there, NOT status.ready (which it
+//     ignores), to set Cluster.status.infrastructureReady; a missing field left
+//     the owning Cluster un-provisioned and Machines stuck "waiting for infra".
+//   - status.failureDomains MUST be published as a LIST mirroring spec, so the
+//     core Cluster controller can copy it into Cluster.status.failureDomains.
+// (The CRD also carries label cluster.x-k8s.io/v1beta2 so core resolves the
+// contract version at all — without it GetContractVersion errors out entirely.)
+func TestIntegration_Cluster_V1Beta2ContractProvisioned(t *testing.T) {
+	ns := freshNamespace(t)
+	ali := makeOwnedCluster(t, ns, func(c *infrav1.AlibabaCloudCluster) {
+		c.Spec.FailureDomains = []infrav1.FailureDomain{
+			{ZoneID: "cn-wulanchabu-a", VSwitchID: "vsw-a"},
+			{ZoneID: "cn-wulanchabu-b", VSwitchID: "vsw-b"},
+		}
+	})
+	r := newClusterReconciler(&fakeclient.FakeClient{})
+
+	reconcileCluster(t, r, ali)
+
+	got := getCluster(t, client.ObjectKeyFromObject(ali))
+	if got.Status.Initialization == nil || got.Status.Initialization.Provisioned == nil ||
+		!*got.Status.Initialization.Provisioned {
+		t.Fatalf("expected status.initialization.provisioned=true (v1beta2 contract); got %+v", got.Status.Initialization)
+	}
+	if len(got.Status.FailureDomains) != 2 {
+		t.Fatalf("expected 2 published failureDomains mirroring spec, got %d: %+v",
+			len(got.Status.FailureDomains), got.Status.FailureDomains)
+	}
+	names := map[string]bool{}
+	for _, fd := range got.Status.FailureDomains {
+		names[fd.Name] = true
+	}
+	if !names["cn-wulanchabu-a"] || !names["cn-wulanchabu-b"] {
+		t.Errorf("published failureDomains must carry the spec zone names, got %+v", got.Status.FailureDomains)
+	}
+}
+
 // The CCM preflight flags Nodes stuck with the cloud-provider uninitialized taint
 // (CCM missing) as CloudControllerManagerReady=False; a clean Node keeps it True.
 func TestIntegration_Cluster_CCMPreflight(t *testing.T) {

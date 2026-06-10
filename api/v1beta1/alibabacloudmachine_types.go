@@ -119,11 +119,28 @@ type MetadataOptions struct {
 	HttpPutResponseHopLimit int `json:"httpPutResponseHopLimit,omitempty"`
 }
 
+// AlibabaCloudMachineInitializationStatus carries the v1beta2 infra-machine
+// contract's initialization signal. CAPI core (v1beta2 contract) reads
+// status.initialization.provisioned — NOT status.ready — to mark the owning
+// Machine's infrastructure ready (which gates nodeRef/bootstrap). Without it the
+// Machine stays in "waiting for infrastructure" indefinitely.
+type AlibabaCloudMachineInitializationStatus struct {
+	// Provisioned is true once the ECS instance backing this machine exists.
+	// +optional
+	Provisioned *bool `json:"provisioned,omitempty"`
+}
+
 // AlibabaCloudMachineStatus defines the observed state of AlibabaCloudMachine.
 type AlibabaCloudMachineStatus struct {
 	// Ready indicates that the machine is ready to receive workloads.
 	// +kubebuilder:default=false
 	Ready bool `json:"ready"`
+
+	// Initialization provides the v1beta2 infra-machine contract's provisioned
+	// signal (status.initialization.provisioned); CAPI core uses it — not
+	// status.ready — to mark the owning Machine's infrastructure ready.
+	// +optional
+	Initialization *AlibabaCloudMachineInitializationStatus `json:"initialization,omitempty"`
 
 	// InstanceID is the ECS instance ID of the provisioned machine.
 	// +optional
@@ -163,6 +180,7 @@ type AlibabaCloudMachineStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:path=alibabacloudmachines,scope=Namespaced,categories=cluster-api
+// +kubebuilder:metadata:labels=cluster.x-k8s.io/v1beta2=v1beta1
 // +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".metadata.labels['cluster\\.x-k8s\\.io/cluster-name']"
 // +kubebuilder:printcolumn:name="State",type="string",JSONPath=".status.instanceState"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.ready"
