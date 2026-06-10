@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 
+	cpv1 "github.com/SammZhu/openshift-capi-alicloud/api/controlplane/v1beta1"
 	infrav1 "github.com/SammZhu/openshift-capi-alicloud/api/v1beta1"
 	infracontroller "github.com/SammZhu/openshift-capi-alicloud/internal/controller"
 	infrawebhook "github.com/SammZhu/openshift-capi-alicloud/internal/webhook/v1beta1"
@@ -46,6 +47,7 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(clusterv1.AddToScheme(scheme))
 	utilruntime.Must(infrav1.AddToScheme(scheme))
+	utilruntime.Must(cpv1.AddToScheme(scheme))
 }
 
 func main() {
@@ -138,6 +140,15 @@ func main() {
 		Log:    ctrl.Log.WithName("controllers").WithName("CSR"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CSR")
+		os.Exit(1)
+	}
+
+	if err = (&infracontroller.AlibabaCloudControlPlaneReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Log:    ctrl.Log.WithName("controllers").WithName("AlibabaCloudControlPlane"),
+	}).SetupWithManager(ctx, mgr, controller.Options{MaxConcurrentReconciles: concurrency}); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AlibabaCloudControlPlane")
 		os.Exit(1)
 	}
 
