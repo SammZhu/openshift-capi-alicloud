@@ -167,6 +167,12 @@ func TestMachineValidateUpdate(t *testing.T) {
 		{"change instanceType", func(_, n *infrav1.AlibabaCloudMachine) { n.Spec.InstanceType = "ecs.g8.xlarge" }, true},
 		{"change imageID", func(_, n *infrav1.AlibabaCloudMachine) { n.Spec.ImageID = "m-other" }, true},
 		{"change zoneID", func(o, n *infrav1.AlibabaCloudMachine) { o.Spec.ZoneID = "z-a"; n.Spec.ZoneID = "z-b" }, true},
+		// resolveFailureDomain fills empty zoneID/vSwitchID at reconcile time — the
+		// controller's one-time "" -> value write MUST be allowed (else the spec
+		// patch is rejected and providerID can never persist → workers never join).
+		{"set zoneID first time", func(o, n *infrav1.AlibabaCloudMachine) { o.Spec.ZoneID = ""; n.Spec.ZoneID = "z-a" }, false},
+		{"set vSwitchID first time", func(o, n *infrav1.AlibabaCloudMachine) { o.Spec.VSwitchID = ""; n.Spec.VSwitchID = "vsw-1" }, false},
+		{"change vSwitchID", func(o, n *infrav1.AlibabaCloudMachine) { o.Spec.VSwitchID = "vsw-1"; n.Spec.VSwitchID = "vsw-2" }, true},
 		{"change systemDisk", func(_, n *infrav1.AlibabaCloudMachine) { n.Spec.SystemDisk.Size = 80 }, true},
 		{"providerID set first time", func(o, n *infrav1.AlibabaCloudMachine) {
 			o.Spec.ProviderID = nil

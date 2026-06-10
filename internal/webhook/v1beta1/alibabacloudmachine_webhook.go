@@ -221,11 +221,23 @@ func validateMachineImmutable(oldM, newM *infrav1.AlibabaCloudMachine) field.Err
 			allErrs = append(allErrs, field.Forbidden(child, "field is immutable"))
 		}
 	}
+	// immutableOnceSet allows the controller's one-time empty -> value write but
+	// forbids changing or clearing an already-set value. zoneID/vSwitchID are
+	// LEFT EMPTY in the MachineDeployment template and resolved at reconcile time
+	// from the CAPI failure domain (resolveFailureDomain). A strict immutable()
+	// here rejected that "" -> value spec write — and because the controller
+	// patches spec atomically, it also blocked providerID from ever persisting,
+	// so the CSR approver never saw a providerID and workers never joined.
+	immutableOnceSet := func(child *field.Path, oldVal, newVal string) {
+		if oldVal != "" && oldVal != newVal {
+			allErrs = append(allErrs, field.Forbidden(child, "field is immutable once set"))
+		}
+	}
 	immutable(spec.Child("instanceType"), oldM.Spec.InstanceType, newM.Spec.InstanceType)
 	immutable(spec.Child("imageID"), oldM.Spec.ImageID, newM.Spec.ImageID)
 	immutable(spec.Child("regionID"), oldM.Spec.RegionID, newM.Spec.RegionID)
-	immutable(spec.Child("zoneID"), oldM.Spec.ZoneID, newM.Spec.ZoneID)
-	immutable(spec.Child("vSwitchID"), oldM.Spec.VSwitchID, newM.Spec.VSwitchID)
+	immutableOnceSet(spec.Child("zoneID"), oldM.Spec.ZoneID, newM.Spec.ZoneID)
+	immutableOnceSet(spec.Child("vSwitchID"), oldM.Spec.VSwitchID, newM.Spec.VSwitchID)
 	immutable(spec.Child("systemDisk"), oldM.Spec.SystemDisk, newM.Spec.SystemDisk)
 	immutable(spec.Child("dataDisks"), oldM.Spec.DataDisks, newM.Spec.DataDisks)
 	immutable(spec.Child("spotStrategy"), oldM.Spec.SpotStrategy, newM.Spec.SpotStrategy)
