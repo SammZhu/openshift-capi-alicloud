@@ -128,6 +128,7 @@ func TestIntegration_Cluster_ReadyWithBYOEndpoint(t *testing.T) {
 //     the owning Cluster un-provisioned and Machines stuck "waiting for infra".
 //   - status.failureDomains MUST be published as a LIST mirroring spec, so the
 //     core Cluster controller can copy it into Cluster.status.failureDomains.
+//
 // (The CRD also carries label cluster.x-k8s.io/v1beta2 so core resolves the
 // contract version at all — without it GetContractVersion errors out entirely.)
 func TestIntegration_Cluster_V1Beta2ContractProvisioned(t *testing.T) {

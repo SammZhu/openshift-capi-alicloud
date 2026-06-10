@@ -9,9 +9,10 @@
 // apply path only, which is exactly the bit that bit us repeatedly on the cluster.
 //
 // Run:
-//   KUBEBUILDER_ASSETS="$(bin/setup-envtest use 1.31.0 -p path --bin-dir bin)" \
-//   CORE_MANIFEST=~/openshift-alibaba/alibaba-openshift/custom_manifests/cluster-api-core.yaml \
-//   go test -tags integration -v ./test/coremanifest/
+//
+//	KUBEBUILDER_ASSETS="$(bin/setup-envtest use 1.31.0 -p path --bin-dir bin)" \
+//	CORE_MANIFEST=~/openshift-alibaba/alibaba-openshift/custom_manifests/cluster-api-core.yaml \
+//	go test -tags integration -v ./test/coremanifest/
 package coremanifest
 
 import (
