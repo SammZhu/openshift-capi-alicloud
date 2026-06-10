@@ -378,9 +378,11 @@ func TestResolveRegion_FallsBackToCluster(t *testing.T) {
 	}
 }
 
-func TestProviderIDFor_SlashFormat(t *testing.T) {
-	if got := providerIDFor("cn-wulanchabu", "i-abc123"); got != "alicloud://cn-wulanchabu/i-abc123" {
-		t.Fatalf("want alicloud://cn-wulanchabu/i-abc123, got %q", got)
+// providerIDFor MUST emit the DOT form to match the Alibaba CCM's
+// Node.spec.providerID, so CAPI core's exact-match nodeRef binding works.
+func TestProviderIDFor_DotFormatMatchesCCM(t *testing.T) {
+	if got := providerIDFor("cn-wulanchabu", "i-abc123"); got != "alicloud://cn-wulanchabu.i-abc123" {
+		t.Fatalf("want alicloud://cn-wulanchabu.i-abc123 (CCM dot form), got %q", got)
 	}
 }
 

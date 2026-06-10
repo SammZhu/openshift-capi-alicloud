@@ -368,13 +368,19 @@ func resolveMetadataOptions(o *infrav1.MetadataOptions) (endpoint, tokens string
 	return endpoint, tokens, o.HttpPutResponseHopLimit
 }
 
-// providerIDFor builds a CAPI-conformant providerID.  The Cluster API
-// convention is alicloud://<region>/<instanceID> (slash-separated).  An
-// earlier build used a dot separator AND Spec.RegionID (often empty),
-// producing "alicloud://.i-abc" — which regionFromMachine could not parse,
-// so deletion failed with "cannot determine region" and the finalizer hung.
+// providerIDFor builds the machine's providerID. It MUST byte-for-byte match
+// what the Alibaba cloud-controller-manager writes onto Node.spec.providerID,
+// because CAPI core binds Machine.status.nodeRef by an EXACT string compare of
+// Machine.spec.providerID == Node.spec.providerID (it does not normalise). The
+// Alibaba CCM uses the DOT form "alicloud://<region>.<instanceID>" (observed on
+// the master node: alicloud://cn-wulanchabu.i-...), so we emit the dot form too;
+// the slash form we used before never matched a Node and left workers without a
+// nodeRef. (regionFromMachine and csr_controller.providerInstanceID already
+// tolerate both separators, so the dot form is safe everywhere else.)
+// region must be the RESOLVED region (never the often-empty Spec.RegionID) so we
+// never regress to the old "alicloud://.i-abc" empty-region parse failure.
 func providerIDFor(region, instanceID string) string {
-	return fmt.Sprintf("alicloud://%s/%s", region, instanceID)
+	return fmt.Sprintf("alicloud://%s.%s", region, instanceID)
 }
 
 // regionFromMachine returns the region for a machine for use on the delete
@@ -424,6 +430,18 @@ func (r *AlibabaCloudMachineReconciler) findOrCreateInstance(
 			// Instance disappeared — terminal: CAPI must remediate (replace it).
 			return nil, newTerminalError("InstanceDisappeared",
 				fmt.Sprintf("ECS instance %s no longer exists", instanceID))
+		}
+
+		// Self-heal spec.providerID. createInstance sets it on the create reconcile,
+		// but if that spec write was ever lost — e.g. it raced a Machine/MachineSet
+		// update of labels/ownerRefs on the same object — the field stays nil
+		// forever. That silently breaks node join: the CSR approver's
+		// hasPendingMachine gate skips machines with a nil ProviderID, so the
+		// worker's bootstrap CSR is never auto-approved and it never becomes a Node.
+		// Re-derive it from the known instance ID here so every reconcile converges.
+		if alibabaCloudMachine.Spec.ProviderID == nil {
+			pid := providerIDFor(resolveRegion(alibabaCloudMachine, alibabaCluster), instanceID)
+			alibabaCloudMachine.Spec.ProviderID = &pid
 		}
 
 		// Always sync addresses and state into status regardless of current state.
