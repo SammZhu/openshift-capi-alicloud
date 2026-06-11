@@ -267,6 +267,38 @@ func TestFindOrCreate_NoInstanceIDCreatesNew(t *testing.T) {
 	}
 }
 
+// G8: createInstance must persist the resolved region onto Spec.RegionID (durable
+// on the spec) so the delete path can resolve a region from the machine alone and
+// sweep a tagged orphan even if Spec.ProviderID/Status.InstanceID writes are lost.
+func TestFindOrCreate_PersistsResolvedRegionOnSpec(t *testing.T) {
+	var gotParamRegion string
+	fakeECS := &fakeclient.FakeClient{
+		CreateECSInstanceFn: func(p alibabaClient.CreateInstanceParams) (*alibabaClient.CreateInstanceResponse, error) {
+			gotParamRegion = p.RegionID
+			return &alibabaClient.CreateInstanceResponse{InstanceID: "i-new"}, nil
+		},
+	}
+	r := &AlibabaCloudMachineReconciler{}
+	// Machine omits RegionID — region must come from the cluster and be persisted.
+	aliMachine := &infrav1.AlibabaCloudMachine{
+		Spec: infrav1.AlibabaCloudMachineSpec{InstanceType: "ecs.c6.large", ImageID: "m-test"},
+	}
+	aliCluster := &infrav1.AlibabaCloudCluster{Spec: infrav1.AlibabaCloudClusterSpec{Region: "cn-shanghai"}}
+
+	if _, err := r.findOrCreateInstance(context.Background(), fakeECS, &clusterv1.Machine{}, aliCluster, aliMachine); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if aliMachine.Spec.RegionID != "cn-shanghai" {
+		t.Errorf("Spec.RegionID not persisted, got %q want cn-shanghai", aliMachine.Spec.RegionID)
+	}
+	if gotParamRegion != "cn-shanghai" {
+		t.Errorf("RunInstances used region %q, want cn-shanghai", gotParamRegion)
+	}
+	if aliMachine.Spec.ProviderID == nil || *aliMachine.Spec.ProviderID != "alicloud://cn-shanghai.i-new" {
+		t.Errorf("providerID = %v, want alicloud://cn-shanghai.i-new", aliMachine.Spec.ProviderID)
+	}
+}
+
 // ── Reconcile — top-level paths ─────────────────────────────────────────────────
 
 func TestReconcile_MachineNotFound(t *testing.T) {

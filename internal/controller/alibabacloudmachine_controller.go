@@ -250,9 +250,10 @@ func (r *AlibabaCloudMachineReconciler) reconcileDelete(ctx context.Context, ali
 
 	region, regionErr := regionFromMachine(alibabaCloudMachine)
 
-	// Neither an instance handle nor a region: createInstance always writes
-	// Spec.ProviderID (carrying both region and ID) before returning, so reaching
-	// here means RunInstances was never issued. Nothing to clean up — safe to drop.
+	// Neither an instance handle nor a region: createInstance persists BOTH
+	// Spec.ProviderID (carrying region and ID) AND Spec.RegionID before RunInstances,
+	// so reaching here means no instance was ever created. Nothing to clean up —
+	// safe to drop the finalizer.
 	if instanceID == "" && regionErr != nil {
 		log.Info("no ECS instance recorded and no region resolvable; nothing was provisioned, removing finalizer")
 		controllerutil.RemoveFinalizer(alibabaCloudMachine, infrav1.MachineFinalizer)
@@ -584,6 +585,16 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 	// Both RunInstances and the providerID must use this resolved value —
 	// never Spec.RegionID directly (it is usually empty; see resolveRegion).
 	region := resolveRegion(alibabaCloudMachine, alibabaCluster)
+
+	// Persist the resolved region onto the spec so the region is recoverable from
+	// the AlibabaCloudMachine ALONE on the delete path (regionFromMachine), even if
+	// both Spec.ProviderID and Status.InstanceID writes are later lost. Without a
+	// resolvable region the delete path cannot build a client to sweep the tagged
+	// orphan and would drop the finalizer with a billable ECS still running (G8).
+	// The webhook allows this one-time empty -> value write (immutableOnceSet).
+	if alibabaCloudMachine.Spec.RegionID == "" {
+		alibabaCloudMachine.Spec.RegionID = region
+	}
 
 	// Metadata service hardening: default to IMDSv2 (token required) unless the
 	// spec opts out. Done here (not only in the webhook) so the secure baseline

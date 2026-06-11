@@ -173,6 +173,14 @@ func TestMachineValidateUpdate(t *testing.T) {
 		{"set zoneID first time", func(o, n *infrav1.AlibabaCloudMachine) { o.Spec.ZoneID = ""; n.Spec.ZoneID = "z-a" }, false},
 		{"set vSwitchID first time", func(o, n *infrav1.AlibabaCloudMachine) { o.Spec.VSwitchID = ""; n.Spec.VSwitchID = "vsw-1" }, false},
 		{"change vSwitchID", func(o, n *infrav1.AlibabaCloudMachine) { o.Spec.VSwitchID = "vsw-1"; n.Spec.VSwitchID = "vsw-2" }, true},
+		// createInstance persists the resolved region onto spec so the delete path
+		// can always resolve it (G8 orphan sweep). That one-time "" -> value write
+		// MUST be allowed; changing an already-set region is still forbidden.
+		{"set regionID first time", func(o, n *infrav1.AlibabaCloudMachine) { o.Spec.RegionID = ""; n.Spec.RegionID = "cn-hangzhou" }, false},
+		{"change regionID", func(o, n *infrav1.AlibabaCloudMachine) {
+			o.Spec.RegionID = "cn-hangzhou"
+			n.Spec.RegionID = "cn-beijing"
+		}, true},
 		{"change systemDisk", func(_, n *infrav1.AlibabaCloudMachine) { n.Spec.SystemDisk.Size = 80 }, true},
 		{"providerID set first time", func(o, n *infrav1.AlibabaCloudMachine) {
 			o.Spec.ProviderID = nil
