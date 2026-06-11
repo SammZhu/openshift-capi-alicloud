@@ -360,3 +360,12 @@ spec:
                 - name: webhook-server
                   containerPort: 9443
                   protocol: TCP
+                # NOTE: no webhook serving-cert volume/volumeMount here ON PURPOSE.
+                # Unlike the ansible path (02-capa-controller.yaml), which mounts an
+                # OpenShift service-ca cert at /tmp/k8s-webhook-server/serving-certs,
+                # under OLM the cert is provisioned + injected by OLM from
+                # spec.webhookdefinitions below — OLM mounts tls.crt/tls.key at that
+                # same controller-runtime default path (see OLM certresources.go).
+                # Do NOT copy the service-ca `cert` volume from 02-capa-controller
+                # here; it would collide with OLM's injection. `make verify-bundle`
+                # enforces this deployment otherwise matching 02-capa-controller.

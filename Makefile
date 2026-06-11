@@ -117,6 +117,15 @@ test-clusterctl-smoke: ## kind smoke: clusterctl install + external-CP reconcile
 	@command -v clusterctl >/dev/null 2>&1 || { echo "need 'clusterctl' on PATH (brew install clusterctl)"; exit 2; }
 	hack/kind-smoke.sh
 
+# Assert the OLM bundle stays in sync: the CSV install-strategy Deployment matches
+# the canonical controller Deployment (02-capa-controller.yaml) field-for-field
+# except the OLM-managed webhook cert volume + the image, and the CSV version is
+# self-consistent across name/version/containerImage/image. Catches a half-done
+# manual bundle bump or a controller change not mirrored into the CSV.
+.PHONY: verify-bundle
+verify-bundle: ## Verify the OLM CSV deployment + version stay in sync (G12 invariant)
+	python3 hack/verify-bundle-sync.py
+
 # ── Code quality ───────────────────────────────────────────────────────────────
 .PHONY: fmt
 fmt: ## Run go fmt
