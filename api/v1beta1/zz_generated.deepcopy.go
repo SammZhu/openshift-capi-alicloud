@@ -421,6 +421,11 @@ func (in *AlibabaCloudMachineStatus) DeepCopyInto(out *AlibabaCloudMachineStatus
 		*out = new(InstanceState)
 		**out = **in
 	}
+	if in.MetadataHardened != nil {
+		in, out := &in.MetadataHardened, &out.MetadataHardened
+		*out = new(bool)
+		**out = **in
+	}
 	if in.Addresses != nil {
 		in, out := &in.Addresses, &out.Addresses
 		*out = make([]v1beta2.MachineAddress, len(*in))

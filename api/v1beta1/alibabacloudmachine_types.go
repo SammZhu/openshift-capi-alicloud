@@ -111,6 +111,16 @@ type MetadataOptions struct {
 	// +optional
 	HttpTokens string `json:"httpTokens,omitempty"`
 
+	// HttpTokensAfterBoot, when set, is the HttpTokens value the controller
+	// enforces on the live instance AFTER the node has joined (the owning Machine
+	// has a nodeRef). This lets a worker boot with the laxer HttpTokens that
+	// RHCOS Ignition needs (tokenless GET of user-data) and then be hardened to
+	// IMDSv2 once Ignition is done — closing the IMDSv1 window without breaking
+	// boot. Leave empty to never change the metadata options after boot.
+	// +kubebuilder:validation:Enum=optional;required
+	// +optional
+	HttpTokensAfterBoot string `json:"httpTokensAfterBoot,omitempty"`
+
 	// HttpPutResponseHopLimit is the maximum number of network hops the metadata
 	// token may travel (1-64). 0 leaves the Alibaba Cloud API default.
 	// +kubebuilder:validation:Minimum=0
@@ -149,6 +159,13 @@ type AlibabaCloudMachineStatus struct {
 	// InstanceState reflects the current state of the ECS instance.
 	// +optional
 	InstanceState *InstanceState `json:"instanceState,omitempty"`
+
+	// MetadataHardened is set true once the controller has applied
+	// spec.metadataOptions.httpTokensAfterBoot to the live instance (a one-shot
+	// guard so the ModifyInstanceMetadataOptions call is not repeated every
+	// reconcile). Nil/false means the post-boot hardening has not run yet.
+	// +optional
+	MetadataHardened *bool `json:"metadataHardened,omitempty"`
 
 	// Addresses contains the associated addresses for the machine.
 	// +optional

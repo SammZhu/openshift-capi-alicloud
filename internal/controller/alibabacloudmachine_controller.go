@@ -498,6 +498,7 @@ func (r *AlibabaCloudMachineReconciler) findOrCreateInstance(
 		switch info.State {
 		case infrav1.InstanceStateRunning:
 			log.Info("ECS instance is Running", "instanceID", instanceID)
+			r.maybeHardenMetadata(ctx, alibabaSDKClient, machine, alibabaCloudMachine, instanceID)
 			return info, nil
 		case infrav1.InstanceStateDeleted, infrav1.InstanceStateStopped:
 			return nil, newTerminalError("InstanceTerminalState",
@@ -516,6 +517,47 @@ func (r *AlibabaCloudMachineReconciler) findOrCreateInstance(
 	// Instance created but not yet Running — requeue to poll status.
 	log.Info("ECS instance created, waiting for Running state", "instanceID", *alibabaCloudMachine.Status.InstanceID)
 	return nil, nil
+}
+
+// maybeHardenMetadata applies spec.metadataOptions.httpTokensAfterBoot to the
+// live instance, but only AFTER the node has joined (the owning Machine has a
+// nodeRef). A worker boots with tokenless IMDS because RHCOS Ignition fetches
+// its user-data without an IMDSv2 token; flipping httpTokens to "required" before
+// Ignition finishes would lock out that fetch and brick the boot. The nodeRef is
+// the signal that Ignition is done, so this closes the IMDSv1 window safely.
+// Best-effort and idempotent: Status.MetadataHardened gates it to one successful
+// call; a failure is logged and retried on the next reconcile. No-op when the
+// field is unset, already applied, or the node has not joined yet.
+func (r *AlibabaCloudMachineReconciler) maybeHardenMetadata(
+	ctx context.Context,
+	c alibabaClient.Client,
+	machine *clusterv1.Machine,
+	m *infrav1.AlibabaCloudMachine,
+	instanceID string,
+) {
+	log := ctrl.LoggerFrom(ctx)
+	if m.Spec.MetadataOptions == nil || m.Spec.MetadataOptions.HttpTokensAfterBoot == "" {
+		return
+	}
+	if m.Status.MetadataHardened != nil && *m.Status.MetadataHardened {
+		return
+	}
+	// Gate on the node having joined — Ignition's tokenless IMDS fetch is then
+	// guaranteed complete, so changing httpTokens cannot interrupt an in-flight boot.
+	if machine == nil || machine.Status.NodeRef.Name == "" {
+		log.Info("deferring IMDS hardening until the node joins (nodeRef)", "instanceID", instanceID)
+		return
+	}
+	httpEndpoint, _, hopLimit := resolveMetadataOptions(m.Spec.MetadataOptions)
+	if err := c.ModifyInstanceMetadata(instanceID, httpEndpoint, m.Spec.MetadataOptions.HttpTokensAfterBoot, hopLimit); err != nil {
+		log.Error(err, "best-effort: failed to harden instance IMDS options (will retry)",
+			"instanceID", instanceID, "httpTokens", m.Spec.MetadataOptions.HttpTokensAfterBoot)
+		return
+	}
+	hardened := true
+	m.Status.MetadataHardened = &hardened
+	log.Info("hardened instance IMDS options after node join",
+		"instanceID", instanceID, "httpTokens", m.Spec.MetadataOptions.HttpTokensAfterBoot)
 }
 
 // instanceInfo holds normalised data about an ECS instance.

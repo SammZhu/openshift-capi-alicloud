@@ -258,6 +258,30 @@ func (c *alibabacloudClient) DeleteECSInstance(instanceID string, force bool) er
 	return nil
 }
 
+// ModifyInstanceMetadata updates the instance's metadata-service (IMDS) options.
+// Empty httpEndpoint/httpTokens and a non-positive hopLimit are left unchanged.
+func (c *alibabacloudClient) ModifyInstanceMetadata(instanceID, httpEndpoint, httpTokens string, hopLimit int) error {
+	req := ecs.CreateModifyInstanceMetadataOptionsRequest()
+	req.InstanceId = instanceID
+	if httpEndpoint != "" {
+		req.HttpEndpoint = httpEndpoint
+	}
+	if httpTokens != "" {
+		req.HttpTokens = httpTokens
+	}
+	if hopLimit > 0 {
+		req.HttpPutResponseHopLimit = requests.NewInteger(hopLimit)
+	}
+	if err := retryThrottled("ModifyInstanceMetadataOptions", func() error {
+		_, e := c.ecsClient.ModifyInstanceMetadataOptions(req)
+		return e
+	}); err != nil {
+		return fmt.Errorf("ModifyInstanceMetadataOptions(%s): %w", instanceID, err)
+	}
+	klog.Infof("Hardened IMDS options on %s (httpTokens=%s)", instanceID, httpTokens)
+	return nil
+}
+
 // MachineNameTagKey is the per-machine tag CAPA stamps on every instance it
 // creates (see the controller's toSDKTags). It is unique within a cluster and is
 // used both as the idempotency key for adopt-before-create AND as the durable

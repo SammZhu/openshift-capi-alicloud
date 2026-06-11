@@ -19,12 +19,13 @@ import (
 // FakeClient is a test double for alibabaClient.Client.
 // Populate the *Fn fields to control what each CAPI method returns.
 type FakeClient struct {
-	DescribeInstanceByIDFn func(instanceID string) (*alibabaClient.InstanceDescription, error)
-	CreateECSInstanceFn    func(params alibabaClient.CreateInstanceParams) (*alibabaClient.CreateInstanceResponse, error)
-	DeleteECSInstanceFn    func(instanceID string, force bool) error
-	FindInstanceByTagFn    func(region, key, value string) (string, error)
-	PutIgnitionObjectFn    func(params alibabaClient.IgnitionStoreParams) (string, error)
-	DeleteIgnitionObjectFn func(params alibabaClient.IgnitionStoreParams) error
+	DescribeInstanceByIDFn   func(instanceID string) (*alibabaClient.InstanceDescription, error)
+	CreateECSInstanceFn      func(params alibabaClient.CreateInstanceParams) (*alibabaClient.CreateInstanceResponse, error)
+	DeleteECSInstanceFn      func(instanceID string, force bool) error
+	FindInstanceByTagFn      func(region, key, value string) (string, error)
+	ModifyInstanceMetadataFn func(instanceID, httpEndpoint, httpTokens string, hopLimit int) error
+	PutIgnitionObjectFn      func(params alibabaClient.IgnitionStoreParams) (string, error)
+	DeleteIgnitionObjectFn   func(params alibabaClient.IgnitionStoreParams) error
 }
 
 // Verify interface compliance at compile time.
@@ -58,6 +59,13 @@ func (f *FakeClient) FindInstanceByTag(region, key, value string) (string, error
 		return f.FindInstanceByTagFn(region, key, value)
 	}
 	return "", nil
+}
+
+func (f *FakeClient) ModifyInstanceMetadata(instanceID, httpEndpoint, httpTokens string, hopLimit int) error {
+	if f.ModifyInstanceMetadataFn != nil {
+		return f.ModifyInstanceMetadataFn(instanceID, httpEndpoint, httpTokens, hopLimit)
+	}
+	return nil
 }
 
 func (f *FakeClient) PutIgnitionObject(p alibabaClient.IgnitionStoreParams) (string, error) {

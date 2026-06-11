@@ -820,6 +820,80 @@ func TestReconcile_Delete_TagSweepCatchesOrphan(t *testing.T) {
 	}
 }
 
+// G14: post-boot IMDSv2 hardening fires once, only after the node has joined
+// (owning Machine has a nodeRef), and is gated so it isn't repeated.
+func TestMaybeHardenMetadata(t *testing.T) {
+	joined := &clusterv1.Machine{}
+	joined.Status.NodeRef.Name = "node-1"
+	notJoined := &clusterv1.Machine{}
+	hardenedTrue := true
+
+	cases := []struct {
+		name       string
+		machine    *clusterv1.Machine
+		opts       *infrav1.MetadataOptions
+		status     *bool
+		wantCalled bool
+		wantTokens string
+		wantStatus bool
+	}{
+		{"hardens after join", joined, &infrav1.MetadataOptions{HttpTokens: "optional", HttpTokensAfterBoot: "required"}, nil, true, "required", true},
+		{"deferred before join", notJoined, &infrav1.MetadataOptions{HttpTokens: "optional", HttpTokensAfterBoot: "required"}, nil, false, "", false},
+		{"already hardened", joined, &infrav1.MetadataOptions{HttpTokensAfterBoot: "required"}, &hardenedTrue, false, "", true},
+		{"field unset", joined, &infrav1.MetadataOptions{HttpTokens: "optional"}, nil, false, "", false},
+		{"no metadataOptions", joined, nil, nil, false, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotID, gotTokens string
+			called := false
+			fakeECS := &fakeclient.FakeClient{
+				ModifyInstanceMetadataFn: func(id, _, tokens string, _ int) error {
+					called = true
+					gotID, gotTokens = id, tokens
+					return nil
+				},
+			}
+			r := &AlibabaCloudMachineReconciler{}
+			m := &infrav1.AlibabaCloudMachine{
+				Spec:   infrav1.AlibabaCloudMachineSpec{MetadataOptions: tc.opts},
+				Status: infrav1.AlibabaCloudMachineStatus{MetadataHardened: tc.status},
+			}
+			r.maybeHardenMetadata(context.Background(), fakeECS, tc.machine, m, "i-test")
+
+			if called != tc.wantCalled {
+				t.Fatalf("ModifyInstanceMetadata called=%v, want %v", called, tc.wantCalled)
+			}
+			if tc.wantCalled {
+				if gotID != "i-test" || gotTokens != tc.wantTokens {
+					t.Errorf("modify(id=%q tokens=%q), want (i-test, %q)", gotID, gotTokens, tc.wantTokens)
+				}
+			}
+			gotStatus := m.Status.MetadataHardened != nil && *m.Status.MetadataHardened
+			if gotStatus != tc.wantStatus {
+				t.Errorf("Status.MetadataHardened=%v, want %v", gotStatus, tc.wantStatus)
+			}
+		})
+	}
+}
+
+// G14: a failed harden leaves MetadataHardened false so it retries next reconcile.
+func TestMaybeHardenMetadata_FailureRetries(t *testing.T) {
+	joined := &clusterv1.Machine{}
+	joined.Status.NodeRef.Name = "node-1"
+	fakeECS := &fakeclient.FakeClient{
+		ModifyInstanceMetadataFn: func(string, string, string, int) error { return fmt.Errorf("api boom") },
+	}
+	r := &AlibabaCloudMachineReconciler{}
+	m := &infrav1.AlibabaCloudMachine{
+		Spec: infrav1.AlibabaCloudMachineSpec{MetadataOptions: &infrav1.MetadataOptions{HttpTokensAfterBoot: "required"}},
+	}
+	r.maybeHardenMetadata(context.Background(), fakeECS, joined, m, "i-test")
+	if m.Status.MetadataHardened != nil && *m.Status.MetadataHardened {
+		t.Error("MetadataHardened must stay false after a failed modify so it retries")
+	}
+}
+
 func TestReconcileNormal_TransientError_NoFailureReason(t *testing.T) {
 	fakeECS := &fakeclient.FakeClient{
 		DescribeInstanceByIDFn: func(id string) (*alibabaClient.InstanceDescription, error) {

@@ -174,6 +174,11 @@ type Client interface {
 	// per-machine tag to catch a billable orphan whose Status.InstanceID write
 	// was lost (the create path already adopts-by-tag for the same race).
 	FindInstanceByTag(region, key, value string) (string, error)
+	// ModifyInstanceMetadata updates a live instance's IMDS options. Used by the
+	// post-boot IMDSv2 hardening (controller's maybeHardenMetadata): a worker
+	// boots with tokenless IMDS for Ignition, then is flipped to httpTokens
+	// required once the node has joined.
+	ModifyInstanceMetadata(instanceID, httpEndpoint, httpTokens string, hopLimit int) error
 
 	// Ignition (user-data) OSS offload — see oss.go.
 	PutIgnitionObject(params IgnitionStoreParams) (presignedURL string, err error)
