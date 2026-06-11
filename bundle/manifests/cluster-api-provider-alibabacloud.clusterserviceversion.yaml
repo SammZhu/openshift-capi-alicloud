@@ -1,12 +1,12 @@
 apiVersion: operators.coreos.com/v1alpha1
 kind: ClusterServiceVersion
 metadata:
-  name: cluster-api-provider-alibabacloud.v0.1.19
+  name: cluster-api-provider-alibabacloud.v0.1.20
   namespace: placeholder
   annotations:
     capabilities: Basic Install
     categories: Cloud Provider
-    containerImage: quay.io/samzhu/openshift-capi-alicloud:v0.1.19
+    containerImage: quay.io/samzhu/openshift-capi-alicloud:v0.1.20
     createdAt: '2026-06-07T00:00:00Z'
     repository: https://github.com/SammZhu/openshift-capi-alicloud
     support: Community (best-effort, no Red Hat SLA)
@@ -45,7 +45,8 @@ spec:
 
 
     > Community-maintained. Not a Red Hat supported component.'
-  version: 0.1.19
+  version: 0.1.20
+  replaces: cluster-api-provider-alibabacloud.v0.1.19
   maturity: alpha
   minKubeVersion: 1.27.0
   provider:
@@ -326,7 +327,7 @@ spec:
                             app: capa-controller-manager
               containers:
               - name: manager
-                image: quay.io/samzhu/openshift-capi-alicloud:v0.1.19
+                image: quay.io/samzhu/openshift-capi-alicloud:v0.1.20
                 imagePullPolicy: IfNotPresent
                 command:
                 - /manager

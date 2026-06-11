@@ -16,18 +16,20 @@ This provider ships the three artifacts `clusterctl` needs:
 
 ## 1. Generate the components
 
-The canonical CRD/controller/RBAC/webhook manifests live in the sibling
-`alibaba-openshift/custom_manifests/` (the same files Phase 08 applies). Assemble
+The CRD/RBAC/controller/webhook manifests come from this repo's kustomize SSOT
+`config/default` (the SAME source Phase 08 and the OLM bundle build from). Render
 them into a clusterctl-labelled `infrastructure-components.yaml`:
 
 ```
 hack/gen-clusterctl-components.sh out/infrastructure-components.yaml
-# override the source dir if the repos aren't siblings:
-#   CAPA_MANIFESTS_DIR=/path/to/custom_manifests hack/gen-clusterctl-components.sh ...
+# bake a real controller image (clusterctl has no ansible sed step):
+#   CAPA_IMAGE=quay.io/samzhu/openshift-capi-alicloud:v0.1.20 hack/gen-clusterctl-components.sh ...
+# override the kustomize dir if needed: CAPA_KUSTOMIZE_DIR=/path/to/config/default
 ```
 
-It stamps every object with `cluster.x-k8s.io/provider: infrastructure-alibabacloud`
-so clusterctl can track/move/delete the provider.
+It runs `kubectl kustomize config/default` and stamps every object with
+`cluster.x-k8s.io/provider: infrastructure-alibabacloud` so clusterctl can
+track/move/delete the provider. `make release` wraps this + copies metadata/template.
 
 ## 2. Local-override layout
 
@@ -37,11 +39,11 @@ Point clusterctl at the artifacts via a provider entry + the overrides tree:
 ```yaml
 providers:
   - name: alibabacloud
-    url: file:///home/you/.cluster-api/overrides/infrastructure-alibabacloud/v0.1.19/infrastructure-components.yaml
+    url: file:///home/you/.cluster-api/overrides/infrastructure-alibabacloud/v0.1.20/infrastructure-components.yaml
     type: InfrastructureProvider
 ```
 
-`~/.cluster-api/overrides/infrastructure-alibabacloud/v0.1.19/`
+`~/.cluster-api/overrides/infrastructure-alibabacloud/v0.1.20/`
 ```
 infrastructure-components.yaml   # from step 1
 metadata.yaml                    # repo root
@@ -107,11 +109,10 @@ OpenShift-native way (service-ca), which kind lacks — so the smoke self-signs 
 
 ## Status / follow-up
 - `metadata.yaml` + `cluster-template.yaml` are first-class in this repo.
-- `infrastructure-components.yaml` is **generated** from the ansible manifests (no
-  third hand-maintained copy). The structural follow-up is to make the provider
-  repo's `config/` the single kustomize source of the deployment manifests and wire
-  a `make release` that emits components + copies metadata/templates — at which
-  point ansible/OLM/clusterctl all consume one source. (`config/` today is a
-  legacy CCCMO-era layout, not the current CAPI deployment.)
+- ✅ `config/` is now the single kustomize SSOT for the deployment manifests:
+  `infrastructure-components.yaml` is generated from `config/default`, ansible
+  (08-deploy-post-install) deploys `oc kustomize config/default`, and the OLM
+  bundle CRDs mirror `config/crd/bases` (`make verify-manifests` enforces it).
+  `make release` emits components + metadata + template into `out/`.
 - ✅ Kind smoke implemented (`make test-clusterctl-smoke`, see above) — `clusterctl
-  init` + external-CP reconcile both verified locally on kind.
+  init` + external-CP reconcile both verified locally on kind off the config/ SSOT.
