@@ -15,6 +15,8 @@ import (
 	"github.com/aliyun/alibaba-cloud-sdk-go/services/vpc"
 	"k8s.io/klog/v2"
 	runtimeclient "sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/SammZhu/openshift-capi-alicloud/pkg/metrics"
 )
 
 // Tag is an Alibaba Cloud resource tag key-value pair.
@@ -252,8 +254,10 @@ func (c *alibabacloudClient) DeleteECSInstance(instanceID string, force bool) er
 		_, e := c.ecsClient.DeleteInstance(delReq)
 		return e
 	}); err != nil {
+		metrics.ObserveInstanceOp("delete", err)
 		return fmt.Errorf("DeleteInstance(%s): %w", instanceID, err)
 	}
+	metrics.ObserveInstanceOp("delete", nil)
 	klog.Infof("Deleted ECS instance %s", instanceID)
 	return nil
 }
@@ -276,8 +280,10 @@ func (c *alibabacloudClient) ModifyInstanceMetadata(instanceID, httpEndpoint, ht
 		_, e := c.ecsClient.ModifyInstanceMetadataOptions(req)
 		return e
 	}); err != nil {
+		metrics.ObserveInstanceOp("harden", err)
 		return fmt.Errorf("ModifyInstanceMetadataOptions(%s): %w", instanceID, err)
 	}
+	metrics.ObserveInstanceOp("harden", nil)
 	klog.Infof("Hardened IMDS options on %s (httpTokens=%s)", instanceID, httpTokens)
 	return nil
 }
@@ -336,6 +342,7 @@ func (c *alibabacloudClient) CreateECSInstance(params CreateInstanceParams) (*Cr
 		}
 		if existing != "" {
 			klog.Infof("adopting existing ECS instance %s for %s=%s (skipping RunInstances)", existing, MachineNameTagKey, mv)
+			metrics.ObserveInstanceOp("adopt", nil)
 			return &CreateInstanceResponse{InstanceID: existing}, nil
 		}
 	}
@@ -427,12 +434,15 @@ func (c *alibabacloudClient) CreateECSInstance(params CreateInstanceParams) (*Cr
 		return e
 	})
 	if err != nil {
+		metrics.ObserveInstanceOp("create", err)
 		return nil, fmt.Errorf("RunInstances: %w", err)
 	}
 	if len(resp.InstanceIdSets.InstanceIdSet) == 0 {
+		metrics.ObserveInstanceOp("create", fmt.Errorf("no instance IDs"))
 		return nil, fmt.Errorf("RunInstances returned no instance IDs")
 	}
 	instanceID := resp.InstanceIdSets.InstanceIdSet[0]
+	metrics.ObserveInstanceOp("create", nil)
 	klog.Infof("Created ECS instance %s", instanceID)
 
 	// Propagate the instance tags to every resource created with the instance —

@@ -360,6 +360,9 @@ spec:
                 - name: webhook-server
                   containerPort: 9443
                   protocol: TCP
+                - name: metrics
+                  containerPort: 8080
+                  protocol: TCP
                 # NOTE: no webhook serving-cert volume/volumeMount here ON PURPOSE.
                 # Unlike the ansible path (02-capa-controller.yaml), which mounts an
                 # OpenShift service-ca cert at /tmp/k8s-webhook-server/serving-certs,

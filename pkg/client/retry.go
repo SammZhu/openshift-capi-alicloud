@@ -8,6 +8,8 @@ import (
 
 	sdkerrors "github.com/aliyun/alibaba-cloud-sdk-go/sdk/errors"
 	"k8s.io/klog/v2"
+
+	"github.com/SammZhu/openshift-capi-alicloud/pkg/metrics"
 )
 
 // Throttle-retry tunables. The Alibaba OpenAPI returns rate-limit errors as 4xx
@@ -53,16 +55,22 @@ func isThrottlingError(err error) bool {
 // capped exponential backoff + jitter. Non-throttling errors (and success)
 // return immediately, so terminal/business errors are never masked.
 func retryThrottled(op string, fn func() error) error {
+	start := time.Now()
 	delay := throttleBaseDelay
 	var err error
 	for attempt := 0; ; attempt++ {
 		if err = fn(); err == nil || !isThrottlingError(err) {
+			metrics.ObserveCloudAPI(op, time.Since(start).Seconds(), err)
 			return err
 		}
+		// Throttled. If the budget is exhausted, give up.
 		if attempt >= throttleMaxRetries {
 			klog.Warningf("%s: throttled, exhausted %d retries: %v", op, throttleMaxRetries, err)
+			metrics.ObserveCloudAPI(op, time.Since(start).Seconds(), err)
 			return err
 		}
+		// Otherwise we WILL retry — count it and back off.
+		metrics.ObserveThrottleRetry(op)
 		jitter := time.Duration(rand.Int63n(int64(delay/2) + 1))
 		sleep := delay + jitter
 		if sleep > throttleMaxDelay {
