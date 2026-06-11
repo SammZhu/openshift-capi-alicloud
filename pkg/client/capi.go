@@ -258,24 +258,26 @@ func (c *alibabacloudClient) DeleteECSInstance(instanceID string, force bool) er
 	return nil
 }
 
-// machineNameTagKey is the per-machine tag CAPA stamps on every instance it
+// MachineNameTagKey is the per-machine tag CAPA stamps on every instance it
 // creates (see the controller's toSDKTags). It is unique within a cluster and is
-// used as the idempotency key for adopt-before-create.
-const machineNameTagKey = "k8s.io/cluster-api-machine"
+// used both as the idempotency key for adopt-before-create AND as the durable
+// handle the delete path sweeps by to catch a tagged orphan whose
+// Status.InstanceID write was lost.
+const MachineNameTagKey = "k8s.io/cluster-api-machine"
 
 // machineTag returns the value of the cluster-api-machine tag, or "" if absent.
 func machineTag(tags []Tag) string {
 	for _, t := range tags {
-		if t.Key == machineNameTagKey {
+		if t.Key == MachineNameTagKey {
 			return t.Value
 		}
 	}
 	return ""
 }
 
-// findInstanceByTag returns the ID of an existing, non-deleted instance carrying
-// the given tag, or "" if none exists.
-func (c *alibabacloudClient) findInstanceByTag(region, key, value string) (string, error) {
+// FindInstanceByTag returns the ID of an existing, non-deleted instance in region
+// carrying the given tag, or "" if none exists.
+func (c *alibabacloudClient) FindInstanceByTag(region, key, value string) (string, error) {
 	req := ecs.CreateDescribeInstancesRequest()
 	req.RegionId = region
 	req.Tag = &[]ecs.DescribeInstancesTag{{Key: key, Value: value}}
@@ -304,12 +306,12 @@ func (c *alibabacloudClient) CreateECSInstance(params CreateInstanceParams) (*Cr
 	// RunInstances and the status persist — which would otherwise leave the
 	// first instance orphaned and billing.
 	if mv := machineTag(params.Tags); mv != "" {
-		existing, err := c.findInstanceByTag(params.RegionID, machineNameTagKey, mv)
+		existing, err := c.FindInstanceByTag(params.RegionID, MachineNameTagKey, mv)
 		if err != nil {
 			return nil, err
 		}
 		if existing != "" {
-			klog.Infof("adopting existing ECS instance %s for %s=%s (skipping RunInstances)", existing, machineNameTagKey, mv)
+			klog.Infof("adopting existing ECS instance %s for %s=%s (skipping RunInstances)", existing, MachineNameTagKey, mv)
 			return &CreateInstanceResponse{InstanceID: existing}, nil
 		}
 	}

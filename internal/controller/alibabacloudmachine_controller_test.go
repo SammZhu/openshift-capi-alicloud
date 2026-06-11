@@ -690,6 +690,104 @@ func TestReconcile_DeleteWithoutOwnerMachine_RemovesFinalizer(t *testing.T) {
 	}
 }
 
+// G8: a delete whose Status.InstanceID write was lost (nil) must still find the
+// live ECS via the durable Spec.ProviderID, delete it, and KEEP the finalizer —
+// not shortcut to "nothing provisioned" and orphan a billable instance.
+func TestReconcile_Delete_LostInstanceID_RecoversFromProviderID(t *testing.T) {
+	scheme := newTestScheme(t)
+	now := metav1.Now()
+	pid := "alicloud://cn-hangzhou.i-leak01"
+	acm := &infrav1.AlibabaCloudMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:         "default",
+			Name:              "lost-id",
+			Finalizers:        []string{infrav1.MachineFinalizer},
+			DeletionTimestamp: &now,
+		},
+		// Status.InstanceID intentionally nil (lost write); providerID is durable.
+		Spec: infrav1.AlibabaCloudMachineSpec{ProviderID: &pid},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&infrav1.AlibabaCloudMachine{}).
+		WithObjects(acm).Build()
+
+	var deleted string
+	fakeECS := &fakeclient.FakeClient{
+		DescribeInstanceByIDFn: func(id string) (*alibabaClient.InstanceDescription, error) {
+			if id != "i-leak01" {
+				t.Errorf("describe id = %q, want i-leak01 (recovered from providerID)", id)
+			}
+			return &alibabaClient.InstanceDescription{InstanceID: id, Status: "Running"}, nil
+		},
+		DeleteECSInstanceFn: func(id string, _ bool) error { deleted = id; return nil },
+	}
+	r := &AlibabaCloudMachineReconciler{Client: k8sClient, Scheme: scheme, AlibabaCloudClientBuilder: fakeBuilder(fakeECS)}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "lost-id"},
+	}); err != nil {
+		t.Fatalf("delete reconcile errored: %v", err)
+	}
+	if deleted != "i-leak01" {
+		t.Fatalf("expected DeleteECSInstance(i-leak01); got %q — instance would have been orphaned", deleted)
+	}
+	got := &infrav1.AlibabaCloudMachine{}
+	if err := k8sClient.Get(context.Background(), runtimeclient.ObjectKey{Namespace: "default", Name: "lost-id"}, got); err != nil {
+		t.Fatalf("object should still exist (finalizer kept while ECS terminates): %v", err)
+	}
+	if !controllerutil.ContainsFinalizer(got, infrav1.MachineFinalizer) {
+		t.Error("finalizer must be retained until the ECS is confirmed gone")
+	}
+}
+
+// G8: even with BOTH Status.InstanceID and Spec.ProviderID lost, a tagged ECS
+// must be swept by the per-machine tag and deleted before the finalizer drops.
+func TestReconcile_Delete_TagSweepCatchesOrphan(t *testing.T) {
+	scheme := newTestScheme(t)
+	now := metav1.Now()
+	acm := &infrav1.AlibabaCloudMachine{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace:         "default",
+			Name:              "tagged-orphan",
+			Finalizers:        []string{infrav1.MachineFinalizer},
+			DeletionTimestamp: &now,
+		},
+		// No InstanceID, no providerID — only the durable region survives. The ECS
+		// tag is the last handle on the billable instance.
+		Spec: infrav1.AlibabaCloudMachineSpec{RegionID: "cn-hangzhou"},
+	}
+	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(acm).Build()
+
+	var deleted, sweepKey, sweepVal string
+	fakeECS := &fakeclient.FakeClient{
+		FindInstanceByTagFn: func(_, key, value string) (string, error) {
+			sweepKey, sweepVal = key, value
+			return "i-tagged-orphan", nil
+		},
+		DeleteECSInstanceFn: func(id string, _ bool) error { deleted = id; return nil },
+	}
+	r := &AlibabaCloudMachineReconciler{Client: k8sClient, Scheme: scheme, AlibabaCloudClientBuilder: fakeBuilder(fakeECS)}
+
+	if _, err := r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{Namespace: "default", Name: "tagged-orphan"},
+	}); err != nil {
+		t.Fatalf("delete reconcile errored: %v", err)
+	}
+	if sweepKey != alibabaClient.MachineNameTagKey || sweepVal != "tagged-orphan" {
+		t.Errorf("tag sweep used key=%q val=%q, want key=%q val=tagged-orphan", sweepKey, sweepVal, alibabaClient.MachineNameTagKey)
+	}
+	if deleted != "i-tagged-orphan" {
+		t.Fatalf("expected DeleteECSInstance(i-tagged-orphan) from tag sweep; got %q — orphan leaked", deleted)
+	}
+	got := &infrav1.AlibabaCloudMachine{}
+	if err := k8sClient.Get(context.Background(), runtimeclient.ObjectKey{Namespace: "default", Name: "tagged-orphan"}, got); err != nil {
+		t.Fatalf("object should still exist until the orphan is confirmed gone: %v", err)
+	}
+	if !controllerutil.ContainsFinalizer(got, infrav1.MachineFinalizer) {
+		t.Error("finalizer must be retained until the swept orphan is gone")
+	}
+}
+
 func TestReconcileNormal_TransientError_NoFailureReason(t *testing.T) {
 	fakeECS := &fakeclient.FakeClient{
 		DescribeInstanceByIDFn: func(id string) (*alibabaClient.InstanceDescription, error) {

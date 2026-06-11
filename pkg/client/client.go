@@ -169,6 +169,11 @@ type Client interface {
 	DescribeInstanceByID(instanceID string) (*InstanceDescription, error)
 	CreateECSInstance(params CreateInstanceParams) (*CreateInstanceResponse, error)
 	DeleteECSInstance(instanceID string, force bool) error
+	// FindInstanceByTag returns the ID of an existing, non-deleted instance in
+	// region tagged key=value, or "" if none. The delete path sweeps by the
+	// per-machine tag to catch a billable orphan whose Status.InstanceID write
+	// was lost (the create path already adopts-by-tag for the same race).
+	FindInstanceByTag(region, key, value string) (string, error)
 
 	// Ignition (user-data) OSS offload — see oss.go.
 	PutIgnitionObject(params IgnitionStoreParams) (presignedURL string, err error)

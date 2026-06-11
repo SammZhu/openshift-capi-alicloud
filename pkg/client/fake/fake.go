@@ -22,6 +22,7 @@ type FakeClient struct {
 	DescribeInstanceByIDFn func(instanceID string) (*alibabaClient.InstanceDescription, error)
 	CreateECSInstanceFn    func(params alibabaClient.CreateInstanceParams) (*alibabaClient.CreateInstanceResponse, error)
 	DeleteECSInstanceFn    func(instanceID string, force bool) error
+	FindInstanceByTagFn    func(region, key, value string) (string, error)
 	PutIgnitionObjectFn    func(params alibabaClient.IgnitionStoreParams) (string, error)
 	DeleteIgnitionObjectFn func(params alibabaClient.IgnitionStoreParams) error
 }
@@ -50,6 +51,13 @@ func (f *FakeClient) DeleteECSInstance(id string, force bool) error {
 		return f.DeleteECSInstanceFn(id, force)
 	}
 	return nil
+}
+
+func (f *FakeClient) FindInstanceByTag(region, key, value string) (string, error) {
+	if f.FindInstanceByTagFn != nil {
+		return f.FindInstanceByTagFn(region, key, value)
+	}
+	return "", nil
 }
 
 func (f *FakeClient) PutIgnitionObject(p alibabaClient.IgnitionStoreParams) (string, error) {

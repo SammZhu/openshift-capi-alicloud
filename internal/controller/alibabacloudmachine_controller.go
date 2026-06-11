@@ -233,32 +233,79 @@ func (r *AlibabaCloudMachineReconciler) reconcileDelete(ctx context.Context, ali
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Reconciling AlibabaCloudMachine delete")
 
-	// Nothing was ever provisioned — drop the finalizer immediately.
-	if alibabaCloudMachine.Status.InstanceID == nil {
+	// Resolve the ECS handle from the most durable signal available — NOT just
+	// Status.InstanceID. Status is a subresource write that can be lost to a patch
+	// conflict after RunInstances succeeds (the very lost-write race the create
+	// path guards against with adopt-by-tag). Spec.ProviderID
+	// (alicloud://<region>.<id>) is written on the same create reconcile but lands
+	// on the spec, so it survives a lost status write and still names the live ECS.
+	// Keying the "nothing provisioned" shortcut off Status.InstanceID alone orphans
+	// a billable instance whenever that single write was lost (G8).
+	instanceID := ""
+	if alibabaCloudMachine.Status.InstanceID != nil {
+		instanceID = *alibabaCloudMachine.Status.InstanceID
+	} else if alibabaCloudMachine.Spec.ProviderID != nil {
+		instanceID = providerInstanceID(*alibabaCloudMachine.Spec.ProviderID)
+	}
+
+	region, regionErr := regionFromMachine(alibabaCloudMachine)
+
+	// Neither an instance handle nor a region: createInstance always writes
+	// Spec.ProviderID (carrying both region and ID) before returning, so reaching
+	// here means RunInstances was never issued. Nothing to clean up — safe to drop.
+	if instanceID == "" && regionErr != nil {
+		log.Info("no ECS instance recorded and no region resolvable; nothing was provisioned, removing finalizer")
 		controllerutil.RemoveFinalizer(alibabaCloudMachine, infrav1.MachineFinalizer)
 		return ctrl.Result{}, nil
 	}
-
-	region, err := regionFromMachine(alibabaCloudMachine)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("cannot determine region for deletion: %w", err)
+	// We know (or suspect) an instance exists but cannot resolve its region to reach
+	// the API. Dropping the finalizer now would orphan it — keep it and requeue.
+	if regionErr != nil {
+		return ctrl.Result{}, fmt.Errorf("cannot determine region to delete instance %s: %w", instanceID, regionErr)
 	}
+
+	// Self-heal a lost Status.InstanceID write from the durable providerID so the
+	// rest of the delete flow (and deleteInstance, which reads Status.InstanceID)
+	// has a handle to act on.
+	if alibabaCloudMachine.Status.InstanceID == nil && instanceID != "" {
+		alibabaCloudMachine.Status.InstanceID = &instanceID
+	}
+
 	alibabaSDKClient, err := r.AlibabaCloudClientBuilder(r.Client, region)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to create Alibaba Cloud client: %w", err)
 	}
 
-	instanceID := *alibabaCloudMachine.Status.InstanceID
-
 	// CAPI contract: the infrastructure must be actually gone before we drop the
 	// finalizer, otherwise the owning Machine (and Node) is reported deleted
 	// while a billable ECS instance lives on.  Poll DescribeInstance and only
 	// release the finalizer once the instance no longer exists.
-	info, err := r.describeInstance(ctx, alibabaSDKClient, instanceID)
-	if err != nil {
-		return ctrl.Result{}, err
+	var info *instanceInfo
+	if instanceID != "" {
+		info, err = r.describeInstance(ctx, alibabaSDKClient, instanceID)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	if info == nil {
+		// The recorded instance (if any) is gone. Before trusting that and releasing
+		// the finalizer, sweep by the durable per-machine tag: a lost InstanceID
+		// write could have left a tagged, billable ECS we never recorded (G8). This
+		// mirrors the create path's adopt-by-tag idempotency — only release the
+		// finalizer once the tag sweep is ALSO clear.
+		orphanID, sweepErr := alibabaSDKClient.FindInstanceByTag(region, alibabaClient.MachineNameTagKey, alibabaCloudMachine.Name)
+		if sweepErr != nil {
+			return ctrl.Result{}, sweepErr
+		}
+		if orphanID != "" {
+			log.Info("found orphan ECS by tag (Status.InstanceID write was lost); deleting before releasing finalizer",
+				"instanceID", orphanID, "machine", alibabaCloudMachine.Name)
+			if delErr := alibabaSDKClient.DeleteECSInstance(orphanID, true); delErr != nil {
+				return ctrl.Result{}, fmt.Errorf("failed to delete orphan ECS %s: %w", orphanID, delErr)
+			}
+			// Re-describe on the next pass; do not drop the finalizer until gone.
+			return ctrl.Result{RequeueAfter: requeueAfter}, nil
+		}
 		log.Info("ECS instance is gone, removing finalizer", "instanceID", instanceID)
 		r.cleanupOffloadedIgnition(ctx, alibabaSDKClient, region, alibabaCloudMachine)
 		controllerutil.RemoveFinalizer(alibabaCloudMachine, infrav1.MachineFinalizer)
