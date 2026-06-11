@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
@@ -14,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	infrav1 "github.com/SammZhu/openshift-capi-alicloud/api/v1beta1"
+	alibabaClient "github.com/SammZhu/openshift-capi-alicloud/pkg/client"
 	fakeclient "github.com/SammZhu/openshift-capi-alicloud/pkg/client/fake"
 )
 
@@ -26,9 +28,10 @@ func newMachineReconciler(fc *fakeclient.FakeClient) *AlibabaCloudMachineReconci
 }
 
 type machineOpts struct {
-	clusterReady  bool
-	withBootstrap bool
-	paused        bool
+	clusterReady        bool
+	withBootstrap       bool
+	paused              bool
+	httpTokensAfterBoot string
 }
 
 // makeMachineFixture wires the full owner graph the machine reconciler needs:
@@ -63,6 +66,7 @@ func makeMachineFixture(t *testing.T, ns string, o machineOpts) *infrav1.Alibaba
 		},
 		Spec: infrav1.AlibabaCloudClusterSpec{
 			Region:               "cn-wulanchabu",
+			BootImageID:          "m-bootimg",
 			ControlPlaneEndpoint: clusterv1.APIEndpoint{Host: "api.byo.example.com", Port: 6443},
 		},
 	}
@@ -126,6 +130,11 @@ func makeMachineFixture(t *testing.T, ns string, o machineOpts) *infrav1.Alibaba
 			}},
 		},
 		Spec: infrav1.AlibabaCloudMachineSpec{InstanceType: "ecs.g7.large"},
+	}
+	if o.httpTokensAfterBoot != "" {
+		aliMachine.Spec.MetadataOptions = &infrav1.MetadataOptions{
+			HttpEndpoint: "enabled", HttpTokens: "optional", HttpTokensAfterBoot: o.httpTokensAfterBoot,
+		}
 	}
 	if o.paused {
 		aliMachine.Annotations = map[string]string{clusterv1.PausedAnnotation: "true"}
@@ -206,5 +215,102 @@ func TestIntegration_Machine_PausedSkips(t *testing.T) {
 	got := getMachine(t, client.ObjectKeyFromObject(ali))
 	if controllerutil.ContainsFinalizer(got, infrav1.MachineFinalizer) {
 		t.Errorf("paused machine should not get a finalizer, got %v", got.Finalizers)
+	}
+}
+
+// setMachineNodeRef gives the owning CAPI Machine a nodeRef — the signal that the
+// node has joined (Ignition done), which the IMDS post-boot hardening waits for.
+func setMachineNodeRef(t *testing.T, ns, node string) {
+	t.Helper()
+	m := &clusterv1.Machine{}
+	if err := k8sClient.Get(reconcileCtx(), client.ObjectKey{Namespace: ns, Name: "machine"}, m); err != nil {
+		t.Fatalf("get Machine: %v", err)
+	}
+	m.Status.NodeRef.Name = node
+	if err := k8sClient.Status().Update(reconcileCtx(), m); err != nil {
+		t.Fatalf("set Machine nodeRef: %v", err)
+	}
+}
+
+// End-to-end machine lifecycle against a real apiserver with a fake cloud:
+// create → ECS provisioned (dot-form providerID) → Running + node joins → Ready +
+// provisioned + IMDS hardened to IMDSv2 (G14) → delete frees the ECS before the
+// finalizer drops, leaving no orphan (G8). This locks in the chain we verified
+// live, and (via the envtest CRD) that the new status fields persist — they are
+// not pruned. Mirrors scripts/verify-capi-pools.sh expectations at the unit of one
+// Machine.
+func TestIntegration_Machine_Lifecycle(t *testing.T) {
+	ns := freshNamespace(t)
+	ali := makeMachineFixture(t, ns, machineOpts{clusterReady: true, withBootstrap: true, httpTokensAfterBoot: "required"})
+
+	phase := "Pending"
+	var created, deleted, hardenedTokens string
+	fc := &fakeclient.FakeClient{
+		CreateECSInstanceFn: func(alibabaClient.CreateInstanceParams) (*alibabaClient.CreateInstanceResponse, error) {
+			created = "i-e2e"
+			return &alibabaClient.CreateInstanceResponse{InstanceID: "i-e2e"}, nil
+		},
+		DescribeInstanceByIDFn: func(id string) (*alibabaClient.InstanceDescription, error) {
+			if phase == "" {
+				return nil, nil // ECS gone
+			}
+			return &alibabaClient.InstanceDescription{InstanceID: id, Status: phase}, nil
+		},
+		ModifyInstanceMetadataFn: func(_, _, tokens string, _ int) error { hardenedTokens = tokens; return nil },
+		DeleteECSInstanceFn:      func(id string, _ bool) error { deleted = id; return nil },
+	}
+	r := newMachineReconciler(fc)
+
+	// 1) Create: provisions an ECS, records InstanceID + dot-form providerID, requeues (Pending).
+	reconcileMachine(t, r, ali)
+	got := getMachine(t, client.ObjectKeyFromObject(ali))
+	if created != "i-e2e" {
+		t.Fatalf("expected ECS create, none happened")
+	}
+	if got.Status.InstanceID == nil || *got.Status.InstanceID != "i-e2e" {
+		t.Fatalf("Status.InstanceID = %v, want i-e2e", got.Status.InstanceID)
+	}
+	if got.Spec.ProviderID == nil || *got.Spec.ProviderID != "alicloud://cn-wulanchabu.i-e2e" {
+		t.Fatalf("providerID = %v, want alicloud://cn-wulanchabu.i-e2e (CCM dot form, #78)", got.Spec.ProviderID)
+	}
+	if got.Status.Ready {
+		t.Errorf("must not be Ready while the ECS is Pending")
+	}
+	if hardenedTokens != "" {
+		t.Errorf("IMDS must not be hardened before the node joins (G14 timing)")
+	}
+
+	// 2) Node joins: ECS Running + the owning Machine gets a nodeRef → Ready,
+	//    provisioned, and IMDS hardened to IMDSv2.
+	phase = "Running"
+	setMachineNodeRef(t, ns, "node-e2e")
+	reconcileMachine(t, r, ali)
+	got = getMachine(t, client.ObjectKeyFromObject(ali))
+	if !got.Status.Ready {
+		t.Errorf("expected Ready once the ECS is Running")
+	}
+	if got.Status.Initialization == nil || got.Status.Initialization.Provisioned == nil || !*got.Status.Initialization.Provisioned {
+		t.Errorf("expected v1beta2 initialization.provisioned=true")
+	}
+	if hardenedTokens != "required" {
+		t.Errorf("expected IMDS hardened to required after join, got %q", hardenedTokens)
+	}
+	if got.Status.MetadataHardened == nil || !*got.Status.MetadataHardened {
+		t.Errorf("expected Status.MetadataHardened=true (and the CRD must persist it, not prune)")
+	}
+
+	// 3) Delete: the ECS is freed before the finalizer drops; once gone, the object
+	//    is removed — no orphan ECS.
+	if err := k8sClient.Delete(reconcileCtx(), got); err != nil {
+		t.Fatalf("delete AlibabaCloudMachine: %v", err)
+	}
+	reconcileMachine(t, r, ali) // describes Running → issues delete → requeue
+	if deleted != "i-e2e" {
+		t.Fatalf("expected ECS delete on the delete path, got %q", deleted)
+	}
+	phase = ""                  // ECS now released
+	reconcileMachine(t, r, ali) // gone → remove finalizer
+	if err := k8sClient.Get(reconcileCtx(), client.ObjectKeyFromObject(ali), &infrav1.AlibabaCloudMachine{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("expected the AlibabaCloudMachine gone after finalizer removal, get err = %v", err)
 	}
 }
