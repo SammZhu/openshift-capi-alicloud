@@ -86,44 +86,88 @@ type InstanceDescription struct {
 // credentials resolved from the in-cluster controller-runtime client.
 type ClientBuilderFunc func(c runtimeclient.Client, region string) (Client, error)
 
+const (
+	// defaultRoleSessionName labels the STS session when assuming a RAM role.
+	defaultRoleSessionName = "capa-controller"
+	// defaultRoleSessionExpiration is the STS token lifetime (seconds); the SDK
+	// refreshes before expiry. 3600s is the RAM-role default max session.
+	defaultRoleSessionExpiration = 3600
+)
+
 // resolveCredential builds an Alibaba Cloud SDK credential for CAPA, preferring
-// an ECS RAM role (auto-rotated STS credentials, no long-lived secret on disk)
-// over static AccessKeys — the least-privilege, rotation-friendly default
-// (P3-CAPA.30). See docs/RAM-POLICY.md for the minimal RAM policy.
+// rotation-friendly identities (auto-refreshed STS credentials, no long-lived
+// secret) over static AccessKeys — the least-privilege default (P3-CAPA.30).
+// See docs/RAM-POLICY.md for the minimal RAM policy.
 //
-// Precedence:
+// Precedence (highest first):
 //  1. Explicitly named ECS RAM role — env ALIBABA_CLOUD_ECS_METADATA.
-//  2. Static AccessKey — env ALIBABA_CLOUD_ACCESS_KEY_{ID,SECRET} (or the older
+//  2. RAM RoleArn (AssumeRole) — env ALIBABA_CLOUD_ROLE_ARN with base
+//     ALIBABA_CLOUD_ACCESS_KEY_{ID,SECRET}. The base key needs only
+//     sts:AssumeRole; the SDK assumes the scoped role and auto-refreshes its
+//     short-lived STS token. Optional ALIBABA_CLOUD_ROLE_SESSION_NAME /
+//     ALIBABA_CLOUD_ROLE_SESSION_EXPIRATION. Closest to a workload-identity
+//     story this SDK supports (it has no OIDC/RRSA signer).
+//  3. Static AccessKey — env ALIBABA_CLOUD_ACCESS_KEY_{ID,SECRET} (or the older
 //     ALIBABACLOUD_* spelling). Explicit opt-in for dev / non-ECS. NOT rotated:
 //     changing it requires restarting the controller.
-//  3. Default — auto-discover the instance RAM role from the metadata service.
+//  4. Default — auto-discover the instance RAM role from the metadata service.
 //     The recommended production path: the SDK fetches and refreshes STS
 //     credentials automatically. Fails at first API call if the controller ECS
 //     has no RAM role attached.
 func resolveCredential() auth.Credential {
-	return resolveCredentialFrom(os.Getenv)
+	cred, _ := resolveCredentialFrom(os.Getenv)
+	return cred
 }
 
-// resolveCredentialFrom is the testable core (env lookup injected).
-func resolveCredentialFrom(getenv func(string) string) auth.Credential {
+// CredentialSource returns a secret-free description of the credential mode the
+// controller will use, for startup observability (G6).
+func CredentialSource() string {
+	_, src := resolveCredentialFrom(os.Getenv)
+	return src
+}
+
+// resolveCredentialFrom is the testable core (env lookup injected). It returns
+// both the SDK credential and a secret-free label of the chosen source.
+func resolveCredentialFrom(getenv func(string) string) (auth.Credential, string) {
 	if role := getenv("ALIBABA_CLOUD_ECS_METADATA"); role != "" {
-		klog.V(2).Infof("alibaba: credential source = ECS RAM role (explicit): %s", role)
-		return credentials.NewEcsRamRoleCredential(role)
+		src := fmt.Sprintf("ECS RAM role (explicit: %s)", role)
+		klog.V(2).Infof("alibaba: credential source = %s", src)
+		return credentials.NewEcsRamRoleCredential(role), src
 	}
 
 	ak := firstNonEmptyFrom(getenv, "ALIBABA_CLOUD_ACCESS_KEY_ID", "ALIBABACLOUD_ACCESS_KEY_ID")
 	sk := firstNonEmptyFrom(getenv, "ALIBABA_CLOUD_ACCESS_KEY_SECRET", "ALIBABACLOUD_ACCESS_KEY_SECRET")
+
+	// RAM RoleArn (AssumeRole): a base AccessKey that only needs sts:AssumeRole
+	// assumes a scoped role; the SDK fetches + auto-refreshes short-lived STS
+	// tokens for it. Stronger than a static AccessKey — the base key carries no
+	// service permissions and the working credential is rotated.
+	if roleArn := getenv("ALIBABA_CLOUD_ROLE_ARN"); roleArn != "" {
+		if ak != "" && sk != "" {
+			session := firstNonEmptyFrom(getenv, "ALIBABA_CLOUD_ROLE_SESSION_NAME")
+			if session == "" {
+				session = defaultRoleSessionName
+			}
+			src := fmt.Sprintf("RAM RoleArn AssumeRole (role=%s, session=%s)", roleArn, session)
+			klog.V(2).Infof("alibaba: credential source = %s", src)
+			return credentials.NewRamRoleArnCredential(ak, sk, roleArn, session, roleSessionExpirationFrom(getenv)), src
+		}
+		klog.Warning("alibaba: ALIBABA_CLOUD_ROLE_ARN is set but base ALIBABA_CLOUD_ACCESS_KEY_{ID,SECRET} " +
+			"is missing; cannot AssumeRole — ignoring and falling through")
+	}
+
 	if ak != "" && sk != "" {
-		klog.V(2).Info("alibaba: credential source = static AccessKey from environment " +
-			"(no auto-rotation; prefer an ECS RAM role in production)")
-		return credentials.NewAccessKeyCredential(ak, sk)
+		const src = "static AccessKey from environment (no auto-rotation; prefer an ECS RAM role or ALIBABA_CLOUD_ROLE_ARN in production)"
+		klog.V(2).Infof("alibaba: credential source = %s", src)
+		return credentials.NewAccessKeyCredential(ak, sk), src
 	}
 	if (ak == "") != (sk == "") {
 		klog.Warning("alibaba: only one of ACCESS_KEY_ID/SECRET set; ignoring partial AccessKey")
 	}
 
-	klog.V(2).Info("alibaba: credential source = ECS RAM role (auto-discovered from metadata)")
-	return credentials.NewEcsRamRoleCredential("")
+	const src = "ECS RAM role (auto-discovered from metadata)"
+	klog.V(2).Infof("alibaba: credential source = %s", src)
+	return credentials.NewEcsRamRoleCredential(""), src
 }
 
 func firstNonEmpty(keys ...string) string {
@@ -137,6 +181,19 @@ func firstNonEmptyFrom(getenv func(string) string, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// roleSessionExpirationFrom reads ALIBABA_CLOUD_ROLE_SESSION_EXPIRATION (seconds),
+// falling back to defaultRoleSessionExpiration when unset, unparseable, or below
+// the STS minimum (900s). No upper clamp — STS validates against the role's max
+// session duration.
+func roleSessionExpirationFrom(getenv func(string) string) int {
+	if v := getenv("ALIBABA_CLOUD_ROLE_SESSION_EXPIRATION"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 900 {
+			return n
+		}
+	}
+	return defaultRoleSessionExpiration
 }
 
 // NewCAPIClient creates an Alibaba Cloud Client suitable for CAPI controllers.

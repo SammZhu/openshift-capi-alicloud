@@ -4,10 +4,48 @@ The CAPA controller authenticates to Alibaba Cloud to manage worker ECS instance
 It resolves a credential in this order (`pkg/client/capi.go` `resolveCredential`):
 
 1. **Explicit ECS RAM role** — env `ALIBABA_CLOUD_ECS_METADATA=<role-name>`.
-2. **Static AccessKey** — env `ALIBABA_CLOUD_ACCESS_KEY_ID` / `_SECRET` (or the older
+2. **RAM RoleArn (AssumeRole)** — env `ALIBABA_CLOUD_ROLE_ARN` together with a base
+   `ALIBABA_CLOUD_ACCESS_KEY_ID` / `_SECRET`. Optional `ALIBABA_CLOUD_ROLE_SESSION_NAME`
+   (default `capa-controller`) and `ALIBABA_CLOUD_ROLE_SESSION_EXPIRATION` (seconds,
+   default 3600). The base key needs only `sts:AssumeRole`; the SDK assumes the
+   scoped role and auto-refreshes its short-lived STS token.
+3. **Static AccessKey** — env `ALIBABA_CLOUD_ACCESS_KEY_ID` / `_SECRET` (or the older
    `ALIBABACLOUD_*` spelling). Dev / non-ECS opt-in.
-3. **Auto-discovered ECS RAM role** (default) — the SDK reads the instance role from
+4. **Auto-discovered ECS RAM role** (default) — the SDK reads the instance role from
    the metadata service.
+
+The resolved mode (never the secret) is logged once at startup
+(`Resolved Alibaba Cloud credential mode`).
+
+> **Workload identity (RRSA/OIDC).** The mature equivalent of AWS IRSA —
+> exchanging a projected ServiceAccount OIDC token for a scoped role with no static
+> key at all — is **not** wired up: the vendored `alibaba-cloud-sdk-go` (v1.61) has
+> no OIDC/AssumeRoleWithOIDC signer. **RoleArn AssumeRole (option 2) is the closest
+> supported hardening**: the only long-lived key is a minimal `sts:AssumeRole`
+> identity, and the working credential is short-lived + auto-rotated. Full RRSA
+> would need the `credentials-go` library + STS plumbing (future work).
+
+### RAM RoleArn (AssumeRole) setup
+
+Put the base key + role ARN in the `alibaba-creds` Secret (the controller reads them
+via `envFrom`, so no manifest change is needed):
+
+```
+oc -n capa-system create secret generic alibaba-creds \
+  --from-literal=ALIBABA_CLOUD_ACCESS_KEY_ID=$BASE_AK \
+  --from-literal=ALIBABA_CLOUD_ACCESS_KEY_SECRET=$BASE_SK \
+  --from-literal=ALIBABA_CLOUD_ROLE_ARN=acs:ram::<account-id>:role/<capa-role>
+```
+
+The **base key**'s policy is just AssumeRole:
+
+```json
+{ "Version": "1", "Statement": [
+  { "Effect": "Allow", "Action": "sts:AssumeRole", "Resource": "*" } ] }
+```
+
+The **assumed role** (`<capa-role>`) carries the minimal service policy below, and its
+trust policy authorizes the base key's RAM user/role to assume it.
 
 ## Prefer a RAM role (recommended)
 

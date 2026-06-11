@@ -72,6 +72,7 @@ func main() {
 	setupLog := ctrl.Log.WithName("setup")
 
 	setupLog.Info("Starting cluster-api-provider-alibaba", "version", version.Version.String())
+	setupLog.Info("Resolved Alibaba Cloud credential mode", "source", alibabaClient.CredentialSource())
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,
