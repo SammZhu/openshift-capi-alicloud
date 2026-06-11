@@ -1,17 +1,17 @@
 apiVersion: operators.coreos.com/v1alpha1
 kind: ClusterServiceVersion
 metadata:
-  name: cluster-api-provider-alibabacloud.v0.1.12
+  name: cluster-api-provider-alibabacloud.v0.1.19
   namespace: placeholder
   annotations:
     capabilities: Basic Install
     categories: Cloud Provider
-    containerImage: quay.io/samzhu/openshift-capi-alicloud:v0.1.12
+    containerImage: quay.io/samzhu/openshift-capi-alicloud:v0.1.19
     createdAt: '2026-06-07T00:00:00Z'
     repository: https://github.com/SammZhu/openshift-capi-alicloud
     support: Community (best-effort, no Red Hat SLA)
     description: "Cluster API infrastructure provider for Alibaba Cloud ECS \u2014 declarative, multi-AZ OpenShift worker provisioning on platform=external."
-    alm-examples: "[\n  {\n    \"apiVersion\": \"infrastructure.cluster.x-k8s.io/v1beta1\",\n    \"kind\": \"AlibabaCloudCluster\",\n    \"metadata\": {\n      \"name\": \"example\"\n    },\n    \"spec\": {\n      \"region\": \"cn-wulanchabu\",\n      \"bootImageID\": \"m-xxxxxxxx\",\n      \"controlPlaneEndpoint\": {\n        \"host\": \"api.example.com\",\n        \"port\": 6443\n      },\n      \"failureDomains\": [\n        {\n          \"zoneID\": \"cn-wulanchabu-a\",\n          \"vSwitchID\": \"vsw-a\"\n        },\n        {\n          \"zoneID\": \"cn-wulanchabu-b\",\n          \"vSwitchID\": \"vsw-b\"\n        }\n      ]\n    }\n  },\n  {\n    \"apiVersion\": \"infrastructure.cluster.x-k8s.io/v1beta1\",\n    \"kind\": \"AlibabaCloudMachineTemplate\",\n    \"metadata\": {\n      \"name\": \"example-worker\"\n    },\n    \"spec\": {\n      \"template\": {\n        \"spec\": {\n          \"instanceType\": \"ecs.g7.xlarge\",\n          \"regionID\": \"cn-wulanchabu\",\n          \"securityGroupIDs\": [\n            \"sg-xxxx\"\n          ],\n          \"systemDisk\": {\n            \"category\": \"cloud_essd\",\n            \"size\": 40\n          }\n        }\n      }\n    }\n  },\n  {\n    \"apiVersion\": \"infrastructure.cluster.x-k8s.io/v1beta1\",\n    \"kind\": \"AlibabaCloudMachine\",\n    \"metadata\": {\n      \"name\": \"example-machine\"\n    },\n    \"spec\": {\n      \"instanceType\": \"ecs.g7.xlarge\",\n      \"imageID\": \"m-xxxxxxxx\",\n      \"zoneID\": \"cn-wulanchabu-a\",\n      \"vSwitchID\": \"vsw-a\",\n      \"securityGroupIDs\": [\n        \"sg-xxxx\"\n      ],\n      \"metadataOptions\": {\n        \"httpTokens\": \"required\"\n      }\n    }\n  },\n  {\n    \"apiVersion\": \"infrastructure.cluster.x-k8s.io/v1beta1\",\n    \"kind\": \"AlibabaCloudClusterTemplate\",\n    \"metadata\": {\n      \"name\": \"example-cluster-tmpl\"\n    },\n    \"spec\": {\n      \"template\": {\n        \"spec\": {\n          \"region\": \"cn-wulanchabu\"\n        }\n      }\n    }\n  }\n]"
+    alm-examples: "[\n  {\n    \"apiVersion\": \"infrastructure.cluster.x-k8s.io/v1beta1\",\n    \"kind\": \"AlibabaCloudCluster\",\n    \"metadata\": {\n      \"name\": \"example\"\n    },\n    \"spec\": {\n      \"region\": \"cn-wulanchabu\",\n      \"bootImageID\": \"m-xxxxxxxx\",\n      \"controlPlaneEndpoint\": {\n        \"host\": \"api.example.com\",\n        \"port\": 6443\n      },\n      \"failureDomains\": [\n        {\n          \"zoneID\": \"cn-wulanchabu-a\",\n          \"vSwitchID\": \"vsw-a\"\n        },\n        {\n          \"zoneID\": \"cn-wulanchabu-b\",\n          \"vSwitchID\": \"vsw-b\"\n        }\n      ]\n    }\n  },\n  {\n    \"apiVersion\": \"infrastructure.cluster.x-k8s.io/v1beta1\",\n    \"kind\": \"AlibabaCloudMachineTemplate\",\n    \"metadata\": {\n      \"name\": \"example-worker\"\n    },\n    \"spec\": {\n      \"template\": {\n        \"spec\": {\n          \"instanceType\": \"ecs.g7.xlarge\",\n          \"regionID\": \"cn-wulanchabu\",\n          \"securityGroupIDs\": [\n            \"sg-xxxx\"\n          ],\n          \"systemDisk\": {\n            \"category\": \"cloud_essd\",\n            \"size\": 40\n          }\n        }\n      }\n    }\n  },\n  {\n    \"apiVersion\": \"infrastructure.cluster.x-k8s.io/v1beta1\",\n    \"kind\": \"AlibabaCloudMachine\",\n    \"metadata\": {\n      \"name\": \"example-machine\"\n    },\n    \"spec\": {\n      \"instanceType\": \"ecs.g7.xlarge\",\n      \"imageID\": \"m-xxxxxxxx\",\n      \"zoneID\": \"cn-wulanchabu-a\",\n      \"vSwitchID\": \"vsw-a\",\n      \"securityGroupIDs\": [\n        \"sg-xxxx\"\n      ],\n      \"metadataOptions\": {\n        \"httpTokens\": \"required\"\n      }\n    }\n  },\n  {\n    \"apiVersion\": \"infrastructure.cluster.x-k8s.io/v1beta1\",\n    \"kind\": \"AlibabaCloudClusterTemplate\",\n    \"metadata\": {\n      \"name\": \"example-cluster-tmpl\"\n    },\n    \"spec\": {\n      \"template\": {\n        \"spec\": {\n          \"region\": \"cn-wulanchabu\"\n        }\n      }\n    }\n  },\n  {\n    \"apiVersion\": \"controlplane.cluster.x-k8s.io/v1beta1\",\n    \"kind\": \"AlibabaCloudControlPlane\",\n    \"metadata\": {\n      \"name\": \"example\"\n    },\n    \"spec\": {\n      \"mode\": \"external\",\n      \"version\": \"v1.33.0\",\n      \"controlPlaneEndpoint\": {\n        \"host\": \"api.example.com\",\n        \"port\": 6443\n      }\n    }\n  }\n]"
 spec:
   displayName: Cluster API Provider Alibaba Cloud
   description: '# Cluster API Provider for Alibaba Cloud
@@ -45,7 +45,7 @@ spec:
 
 
     > Community-maintained. Not a Red Hat supported component.'
-  version: 0.1.12
+  version: 0.1.19
   maturity: alpha
   minKubeVersion: 1.27.0
   provider:
@@ -101,6 +101,11 @@ spec:
       kind: AlibabaCloudClusterTemplate
       displayName: AlibabaCloudClusterTemplate
       description: A template for AlibabaCloudClusters.
+    - name: alibabacloudcontrolplanes.controlplane.cluster.x-k8s.io
+      version: v1beta1
+      kind: AlibabaCloudControlPlane
+      displayName: AlibabaCloudControlPlane
+      description: Adopts the externally-managed OpenShift control plane (mode=external) so CAPI core marks the Cluster's ControlPlaneInitialized.
   webhookdefinitions:
   - type: MutatingAdmissionWebhook
     admissionReviewVersions:
@@ -203,6 +208,26 @@ spec:
           verbs:
           - update
         - apiGroups:
+          - controlplane.cluster.x-k8s.io
+          resources:
+          - alibabacloudcontrolplanes
+          verbs:
+          - get
+          - list
+          - watch
+          - create
+          - update
+          - patch
+          - delete
+        - apiGroups:
+          - controlplane.cluster.x-k8s.io
+          resources:
+          - alibabacloudcontrolplanes/status
+          verbs:
+          - get
+          - update
+          - patch
+        - apiGroups:
           - cluster.x-k8s.io
           resources:
           - clusters
@@ -301,7 +326,7 @@ spec:
                             app: capa-controller-manager
               containers:
               - name: manager
-                image: quay.io/samzhu/openshift-capi-alicloud:v0.1.12
+                image: quay.io/samzhu/openshift-capi-alicloud:v0.1.19
                 imagePullPolicy: IfNotPresent
                 command:
                 - /manager
