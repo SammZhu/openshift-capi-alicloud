@@ -1,0 +1,13 @@
+# clusterctl provider metadata.
+#
+# Maps each release series of THIS provider to the Cluster API API contract it
+# implements, so `clusterctl` can check compatibility before init/upgrade.
+#
+# Contract v1beta2: our CRDs carry the `cluster.x-k8s.io/v1beta2` contract label
+# and implement status.initialization.{provisioned,controlPlaneInitialized}
+# (see api/v1beta1 + the AlibabaCloudControlPlane). Vendored against CAPI v1.13.
+apiVersion: clusterctl.cluster.x-k8s.io/v1alpha3
+releaseSeries:
+  - major: 0
+    minor: 1
+    contract: v1beta2

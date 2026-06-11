@@ -6,3 +6,4 @@ config/bootstrap-master.yaml
 config/bootstrap-worker.yaml
 
 
+out/

@@ -1,0 +1,144 @@
+# clusterctl cluster template — day-2 worker pool on an externally-managed
+# OpenShift control plane (platform=external).
+#
+#   clusterctl generate cluster <name> --infrastructure alibabacloud \
+#     --kubernetes-version v1.33.0 | kubectl apply -f -
+#
+# This is the SINGLE-pool form (one MachineDeployment in one AZ). For multi-AZ HA,
+# duplicate the AlibabaCloudMachineTemplate? no — reuse the shared template and add
+# one MachineDeployment per AZ (each with its own failureDomain), and list every AZ
+# in AlibabaCloudCluster.spec.failureDomains. See docs/CLUSTERCTL.md and
+# alibaba-openshift custom_manifests/capa-worker-machinedeployment.yaml.
+#
+# Required variables (clusterctl reads them from env / clusterctl.yaml):
+#   CLUSTER_NAME, NAMESPACE, KUBERNETES_VERSION,
+#   ALIBABA_REGION, ALIBABA_AZ, ALIBABA_VSWITCH_ID, ALIBABA_BOOT_IMAGE_ID,
+#   ALIBABA_SECURITY_GROUP_ID, ALIBABA_RAM_ROLE_NAME,
+#   CONTROL_PLANE_ENDPOINT_HOST, WORKER_BOOTSTRAP_SECRET
+# Optional (have defaults): CONTROL_PLANE_ENDPOINT_PORT, ALIBABA_INSTANCE_TYPE,
+#   WORKER_MACHINE_COUNT
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AlibabaCloudCluster
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  region: ${ALIBABA_REGION}
+  bootImageID: ${ALIBABA_BOOT_IMAGE_ID}
+  controlPlaneEndpoint:
+    host: ${CONTROL_PLANE_ENDPOINT_HOST}
+    port: ${CONTROL_PLANE_ENDPOINT_PORT:=6443}
+  failureDomains:
+    - zoneID: ${ALIBABA_AZ}
+      vSwitchID: ${ALIBABA_VSWITCH_ID}
+---
+# Externally-managed control plane: adopts the existing OCP masters so CAPI core
+# marks the Cluster's ControlPlaneInitialized=True (workers gate on it).
+apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+kind: AlibabaCloudControlPlane
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: ${NAMESPACE}
+  labels:
+    cluster.x-k8s.io/cluster-name: ${CLUSTER_NAME}
+spec:
+  mode: external
+  version: ${KUBERNETES_VERSION}
+  controlPlaneEndpoint:
+    host: ${CONTROL_PLANE_ENDPOINT_HOST}
+    port: ${CONTROL_PLANE_ENDPOINT_PORT:=6443}
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: ${CLUSTER_NAME}
+  namespace: ${NAMESPACE}
+spec:
+  controlPlaneRef:
+    apiGroup: controlplane.cluster.x-k8s.io
+    kind: AlibabaCloudControlPlane
+    name: ${CLUSTER_NAME}
+  infrastructureRef:
+    apiGroup: infrastructure.cluster.x-k8s.io
+    kind: AlibabaCloudCluster
+    name: ${CLUSTER_NAME}
+---
+# Shared worker template — NO zoneID/vSwitchID (resolved per-Machine from the
+# MachineDeployment's failureDomain). Boots with IMDSv1 for RHCOS Ignition, then
+# the controller hardens to IMDSv2 once the node joins (httpTokensAfterBoot).
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: AlibabaCloudMachineTemplate
+metadata:
+  name: ${CLUSTER_NAME}-worker
+  namespace: ${NAMESPACE}
+spec:
+  template:
+    spec:
+      instanceType: ${ALIBABA_INSTANCE_TYPE:=ecs.g7.xlarge}
+      regionID: ${ALIBABA_REGION}
+      securityGroupIDs:
+        - ${ALIBABA_SECURITY_GROUP_ID}
+      ramRoleName: ${ALIBABA_RAM_ROLE_NAME}
+      systemDisk:
+        category: cloud_essd
+        size: 40
+      metadataOptions:
+        httpEndpoint: enabled
+        httpTokens: optional
+        httpTokensAfterBoot: required
+      tags:
+        - key: openshift-worker-pool
+          value: capa-multiaz
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineDeployment
+metadata:
+  name: ${CLUSTER_NAME}-md-0
+  namespace: ${NAMESPACE}
+  labels:
+    cluster.x-k8s.io/cluster-name: ${CLUSTER_NAME}
+spec:
+  clusterName: ${CLUSTER_NAME}
+  replicas: ${WORKER_MACHINE_COUNT:=1}
+  selector:
+    matchLabels:
+      cluster.x-k8s.io/cluster-name: ${CLUSTER_NAME}
+      pool: ${CLUSTER_NAME}-md-0
+  template:
+    metadata:
+      labels:
+        cluster.x-k8s.io/cluster-name: ${CLUSTER_NAME}
+        pool: ${CLUSTER_NAME}-md-0
+    spec:
+      clusterName: ${CLUSTER_NAME}
+      failureDomain: ${ALIBABA_AZ}
+      bootstrap:
+        dataSecretName: ${WORKER_BOOTSTRAP_SECRET}
+      infrastructureRef:
+        apiGroup: infrastructure.cluster.x-k8s.io
+        kind: AlibabaCloudMachineTemplate
+        name: ${CLUSTER_NAME}-worker
+---
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: MachineHealthCheck
+metadata:
+  name: ${CLUSTER_NAME}-mhc
+  namespace: ${NAMESPACE}
+spec:
+  clusterName: ${CLUSTER_NAME}
+  selector:
+    matchLabels:
+      cluster.x-k8s.io/cluster-name: ${CLUSTER_NAME}
+  checks:
+    nodeStartupTimeoutSeconds: 1200
+    unhealthyNodeConditions:
+      - type: Ready
+        status: "False"
+        timeoutSeconds: 300
+      - type: Ready
+        status: Unknown
+        timeoutSeconds: 300
+  remediation:
+    triggerIf:
+      unhealthyLessThanOrEqualTo: 40%
