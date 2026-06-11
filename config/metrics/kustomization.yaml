@@ -1,0 +1,9 @@
+# Metrics overlay (G11). Kept SEPARATE from config/default because the
+# ServiceMonitor needs the Prometheus Operator (monitoring.coreos.com) CRD —
+# present on OpenShift, absent on a bare kind/management cluster. ansible applies
+# this guarded on that CRD; clusterctl/OLM components do NOT include it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - service.yaml
+  - servicemonitor.yaml

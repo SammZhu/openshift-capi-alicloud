@@ -1,0 +1,15 @@
+# The deployable provider: CRDs + RBAC + controller + admission webhooks.
+# This is the single source consumed by ansible (08-deploy-post-install),
+# clusterctl (hack/gen-clusterctl-components.sh), and — for CRDs — the OLM bundle.
+# `kubectl kustomize config/default` emits exactly 13 objects:
+#   5 CRDs + (Namespace, ServiceAccount, ClusterRole, ClusterRoleBinding,
+#   Deployment) + (webhook Service, Mutating-, ValidatingWebhookConfiguration).
+# Metrics (Service + ServiceMonitor) live in config/metrics — applied separately
+# because the ServiceMonitor CRD is OpenShift-only.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../crd
+  - ../rbac
+  - ../manager
+  - ../webhook

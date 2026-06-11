@@ -37,7 +37,7 @@ in order (`pkg/client/capi.go` → `resolveCredential`):
 1. **AccessKey from environment** — `ALIBABA_CLOUD_ACCESS_KEY_{ID,SECRET}`
    (also accepts the older `ALIBABACLOUD_*` spelling).  Inject via a Secret +
    `envFrom` on the controller Deployment — see the `alibaba-creds` pattern in
-   `alibaba-openshift/custom_manifests/02-capa-controller.yaml`.
+   `config/manager/deployment.yaml`.
 2. **ECS RAM role** — when `ALIBABA_CLOUD_ECS_METADATA` names the role to assume.
 3. nil — preserves loud-failure for an empty environment.
 

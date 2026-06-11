@@ -5,8 +5,8 @@ enforced invariant.
 Two checks:
 
 1. DEPLOYMENT SYNC — the CSV install-strategy Deployment spec must match the
-   canonical controller Deployment that the ansible flow applies
-   (custom_manifests/02-capa-controller.yaml), field-for-field, EXCEPT the
+   canonical controller Deployment in the kustomize SSOT
+   (config/manager/deployment.yaml), field-for-field, EXCEPT the
    webhook serving-cert volume + volumeMount and the container image:
      * the cert volume is intentionally absent under OLM — OLM injects the
        serving cert (tls.crt/tls.key at /tmp/k8s-webhook-server/serving-certs,
@@ -24,6 +24,9 @@ Two checks:
 
 Usage: hack/verify-bundle-sync.py
 Override the canonical manifest with CAPA_CONTROLLER_MANIFEST=/path.
+
+The canonical controller Deployment is config/manager/deployment.yaml — the same
+kustomize SSOT ansible and clusterctl consume.
 """
 import os
 import sys
@@ -39,8 +42,7 @@ CSV = os.path.join(
 )
 CONTROLLER = os.environ.get(
     "CAPA_CONTROLLER_MANIFEST",
-    os.path.join(REPO, "..", "alibaba-openshift", "custom_manifests",
-                 "02-capa-controller.yaml"),
+    os.path.join(REPO, "config", "manager", "deployment.yaml"),
 )
 
 errors = []

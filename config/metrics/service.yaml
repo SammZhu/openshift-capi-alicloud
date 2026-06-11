@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: capa-controller-manager-metrics
+  namespace: capa-system
+  labels:
+    app: capa-controller-manager
+spec:
+  selector:
+    app: capa-controller-manager
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: metrics
+      protocol: TCP

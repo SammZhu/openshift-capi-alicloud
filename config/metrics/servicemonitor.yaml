@@ -1,0 +1,16 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: capa-controller-manager
+  namespace: capa-system
+  labels:
+    app: capa-controller-manager
+spec:
+  selector:
+    matchLabels:
+      app: capa-controller-manager
+  endpoints:
+    - port: metrics
+      scheme: http
+      path: /metrics
+      interval: 30s

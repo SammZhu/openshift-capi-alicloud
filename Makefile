@@ -56,7 +56,10 @@ generate: controller-gen ## Regenerate DeepCopy and CRD manifests
 	# (Alibaba prices its spot ceiling as a float; the SDK's SpotPriceLimit is a
 	# float-backed string). controller-gen otherwise refuses to emit floats.
 	$(CONTROLLER_GEN) crd:allowDangerousTypes=true paths="./api/..." output:crd:dir=config/crd/bases
-	@echo "Generated DeepCopy and CRD manifests"
+	# config/crd/bases is the CRD SSOT; mirror it into the OLM bundle so the bundle
+	# never drifts (verify-manifests enforces this).
+	cp config/crd/bases/*.yaml bundle/manifests/
+	@echo "Generated DeepCopy + CRD manifests (config/crd/bases) and synced bundle CRDs"
 
 .PHONY: controller-gen
 controller-gen: ## Download controller-gen if not present
@@ -118,13 +121,33 @@ test-clusterctl-smoke: ## kind smoke: clusterctl install + external-CP reconcile
 	hack/kind-smoke.sh
 
 # Assert the OLM bundle stays in sync: the CSV install-strategy Deployment matches
-# the canonical controller Deployment (02-capa-controller.yaml) field-for-field
-# except the OLM-managed webhook cert volume + the image, and the CSV version is
-# self-consistent across name/version/containerImage/image. Catches a half-done
+# the canonical controller Deployment (config/manager/deployment.yaml) field-for-
+# field except the OLM-managed webhook cert volume + the image, and the CSV version
+# is self-consistent across name/version/containerImage/image. Catches a half-done
 # manual bundle bump or a controller change not mirrored into the CSV.
 .PHONY: verify-bundle
 verify-bundle: ## Verify the OLM CSV deployment + version stay in sync (G12 invariant)
 	python3 hack/verify-bundle-sync.py
+
+# Assert the whole manifest SSOT is consistent: the OLM bundle CRDs match
+# config/crd/bases (run `make generate` to resync), plus verify-bundle. This is the
+# drift gate for config/ being the single source consumed by ansible/OLM/clusterctl.
+.PHONY: verify-manifests
+verify-manifests: verify-bundle ## Verify bundle CRDs match config/crd/bases (SSOT)
+	@for f in config/crd/bases/*.yaml; do \
+	  b="bundle/manifests/$$(basename $$f)"; \
+	  diff -q "$$f" "$$b" >/dev/null || { echo "bundle CRD drift: $$(basename $$f) — run 'make generate'"; exit 1; }; \
+	done
+	@echo "bundle CRDs match config/crd/bases"
+
+# Emit the clusterctl release artifacts (components + metadata + template) into out/
+# from the config/ SSOT. CAPA_IMAGE pins the controller image.
+.PHONY: release
+release: ## Emit clusterctl release artifacts into out/ from config/ SSOT
+	hack/gen-clusterctl-components.sh out/infrastructure-components.yaml
+	cp metadata.yaml out/metadata.yaml
+	cp templates/cluster-template.yaml out/cluster-template.yaml
+	@echo "clusterctl release artifacts in out/"
 
 # ── Code quality ───────────────────────────────────────────────────────────────
 .PHONY: fmt

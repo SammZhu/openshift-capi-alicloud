@@ -1,0 +1,53 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: capa-manager-role
+rules:
+  - apiGroups: [infrastructure.cluster.x-k8s.io]
+    resources: [alibabacloudclusters, alibabacloudmachines, alibabacloudclustertemplates, alibabacloudmachinetemplates]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [infrastructure.cluster.x-k8s.io]
+    resources: [alibabacloudclusters/status, alibabacloudmachines/status]
+    verbs: [get, update, patch]
+  - apiGroups: [infrastructure.cluster.x-k8s.io]
+    resources: [alibabacloudclusters/finalizers, alibabacloudmachines/finalizers]
+    verbs: [update]
+  # Externally-managed control plane (AlibabaCloudControlPlane) — Cluster's
+  # controlPlaneRef; reports the existing OCP control plane as initialized so
+  # CAPI core marks ControlPlaneInitialized and worker MachineDeployments converge.
+  - apiGroups: [controlplane.cluster.x-k8s.io]
+    resources: [alibabacloudcontrolplanes]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [controlplane.cluster.x-k8s.io]
+    resources: [alibabacloudcontrolplanes/status]
+    verbs: [get, update, patch]
+  - apiGroups: [cluster.x-k8s.io]
+    resources: [clusters, machines, machines/status]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [secrets, events]
+    verbs: [get, list, watch, create, update, patch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+  # B1 (P3-CAPA.18): auto-approve kubelet CSRs for CAPA-provisioned nodes.
+  - apiGroups: [certificates.k8s.io]
+    resources: [certificatesigningrequests]
+    verbs: [get, list, watch]
+  - apiGroups: [certificates.k8s.io]
+    resources: [certificatesigningrequests/approval]
+    verbs: [update]
+  - apiGroups: [certificates.k8s.io]
+    resources: [signers]
+    resourceNames:
+      - kubernetes.io/kube-apiserver-client-kubelet
+      - kubernetes.io/kubelet-serving
+    verbs: [approve]
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch]
+  # P3-CAPA.29 (#79): detect the CAPI core controller-manager (cluster.x-k8s.io/
+  # provider=cluster-api) to gate on self-bundled vs OCP-hosted core coexistence.
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch]

@@ -25,9 +25,10 @@ bundle.Dockerfile                    # builds the bundle image
 - Install modes: `AllNamespaces` (cluster-scoped provider) + `OwnNamespace`.
 - Owned CRDs: AlibabaCloud{Cluster,Machine,ClusterTemplate,MachineTemplate}; `alm-examples` for each.
 - The CSV `install` embeds the controller Deployment + clusterPermissions
-  (transcribed from `custom_manifests/02-capa-controller.yaml`).
+  (kept in sync with the kustomize SSOT `config/manager/deployment.yaml` +
+  `config/rbac/` — `make verify-bundle` enforces it).
 - `webhookdefinitions`: the 1 mutating + 2 validating webhooks (from
-  `02-capa-webhooks.yaml`); under OLM the **service-ca cert volume is removed** —
+  `config/webhook/`); under OLM the **service-ca cert volume is removed** —
   OLM provisions the webhook Service + serving cert itself.
 
 ## Validate locally

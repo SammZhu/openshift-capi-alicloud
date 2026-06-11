@@ -10,8 +10,8 @@
 #
 # Prerequisites:
 #   - OpenShift cluster installed and kubeconfig available
-#   - CAPA CRDs applied:  oc apply -f custom_manifests/02-capa-crds.yaml
-#   - CAPA controller running: oc apply -f custom_manifests/02-capa-controller.yaml
+#   - CAPA installed (CRDs + RBAC + controller + webhooks):
+#       oc kustomize config/default | oc apply --server-side --force-conflicts -f -
 #   - CCM running and nodes Ready
 #
 # Usage:
