@@ -79,6 +79,32 @@ Defaulted: `CONTROL_PLANE_ENDPOINT_PORT=6443`, `ALIBABA_INSTANCE_TYPE=ecs.g7.xla
 — same shape as `alibaba-openshift/custom_manifests/capa-worker-machinedeployment.yaml`.
 See [CAPA-DAY2-OPS](https://github.com/SammZhu/alibaba-openshift/blob/main/docs/CAPA-DAY2-OPS.md).
 
+## Kind smoke (verifies this install path)
+
+`make test-clusterctl-smoke` (script: `hack/kind-smoke.sh`) exercises everything on
+this page against a throwaway **kind** management cluster — hermetically, with **no
+real Alibaba creds and no ECS provisioned**. It:
+
+1. assembles the override layout (via `gen-clusterctl-components.sh` with a real
+   pullable image baked in through `CAPA_IMAGE`),
+2. `kind create cluster` + `clusterctl init --infrastructure alibabacloud`,
+3. asserts the provider controller + webhooks come up (**install** path, G3-5),
+4. `clusterctl generate cluster` renders the expected 6 objects and they are
+   **admitted** by the webhooks,
+5. the externally-managed `AlibabaCloudControlPlane` reconciles and CAPI core
+   propagates `Cluster.status.initialization.controlPlaneInitialized=true`
+   (**reconcile** smoke, G7-2 — needs no cloud creds),
+6. the derived `AlibabaCloudMachine` reaches the Alibaba SDK and fails on the dummy
+   creds without crashlooping (proves the path, not real provisioning).
+
+Requires `kind` + `clusterctl` (>=v1.11 for the v1beta2 contract) + a container
+runtime (docker, else podman with `KIND_EXPERIMENTAL_PROVIDER=podman` and the
+machine bumped to ≥4GiB). `KEEP_CLUSTER=1` leaves the cluster up for debugging.
+
+Note the webhook TLS: the canonical manifests mint the serving cert the
+OpenShift-native way (service-ca), which kind lacks — so the smoke self-signs the
+`capa-webhook-server-cert` Secret and injects the `caBundle` itself.
+
 ## Status / follow-up
 - `metadata.yaml` + `cluster-template.yaml` are first-class in this repo.
 - `infrastructure-components.yaml` is **generated** from the ansible manifests (no
@@ -87,5 +113,5 @@ See [CAPA-DAY2-OPS](https://github.com/SammZhu/alibaba-openshift/blob/main/docs/
   a `make release` that emits components + copies metadata/templates — at which
   point ansible/OLM/clusterctl all consume one source. (`config/` today is a
   legacy CCCMO-era layout, not the current CAPI deployment.)
-- A kind smoke (`clusterctl init --infrastructure alibabacloud`) is the suggested
-  verification once components are published.
+- ✅ Kind smoke implemented (`make test-clusterctl-smoke`, see above) — `clusterctl
+  init` + external-CP reconcile both verified locally on kind.

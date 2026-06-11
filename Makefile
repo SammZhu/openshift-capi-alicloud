@@ -106,6 +106,17 @@ test-core-manifest: setup-envtest ## envtest: verify cluster-api-core.yaml appli
 	CORE_MANIFEST="$(CORE_MANIFEST)" \
 	go test -tags integration -count=1 -v ./test/coremanifest/
 
+# Local kind smoke for the clusterctl install path (G3-5) + a CAPI reconcile
+# smoke (G7-2): clusterctl init this provider, render+apply the day-2 worker
+# template, assert the controller/webhooks come up and the external control plane
+# reconciles. Hermetic — no real Alibaba creds, no ECS. Needs kind + clusterctl
+# (>=v1.11) + a container runtime (docker, else podman). KEEP_CLUSTER=1 to debug.
+.PHONY: test-clusterctl-smoke
+test-clusterctl-smoke: ## kind smoke: clusterctl install + external-CP reconcile (no cloud)
+	@command -v kind >/dev/null 2>&1       || { echo "need 'kind' on PATH (brew install kind)"; exit 2; }
+	@command -v clusterctl >/dev/null 2>&1 || { echo "need 'clusterctl' on PATH (brew install clusterctl)"; exit 2; }
+	hack/kind-smoke.sh
+
 # ── Code quality ───────────────────────────────────────────────────────────────
 .PHONY: fmt
 fmt: ## Run go fmt
