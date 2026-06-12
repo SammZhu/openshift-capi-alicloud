@@ -33,8 +33,8 @@ set -euo pipefail
 CLUSTER="${CLUSTER:-capa-smoke}"
 PROVIDER_NS=capa-system
 WORKLOAD_NS=default
-CAPA_IMAGE="${CAPA_IMAGE:-quay.io/samzhu/openshift-capi-alicloud:v0.1.20}"
-VERSION="${CAPA_VERSION:-v0.1.20}"
+CAPA_IMAGE="${CAPA_IMAGE:-quay.io/samzhu/openshift-capi-alicloud:v0.1.21}"
+VERSION="${CAPA_VERSION:-v0.1.21}"
 K8S_VERSION="${K8S_VERSION:-v1.33.0}"
 WORKER_BOOTSTRAP_SECRET="${WORKER_BOOTSTRAP_SECRET:-capa-smoke-bootstrap}"
 
