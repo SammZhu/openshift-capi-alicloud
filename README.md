@@ -239,6 +239,19 @@ spec:
 
 See `examples/capi-machinedeployment.yaml` — Scenario B for the full multi-AZ example.
 
+## Documentation
+| Doc | What |
+|-----|------|
+| [docs/CLUSTERCTL.md](docs/CLUSTERCTL.md) | Install via `clusterctl` (metadata / components / cluster-template) + the kind smoke. |
+| [docs/OPERATOR-BUNDLE.md](docs/OPERATOR-BUNDLE.md) | OLM bundle (CSV / owned CRDs / webhookdefinitions) — community-operator prep. |
+| [docs/RAM-POLICY.md](docs/RAM-POLICY.md) | Controller credential modes (ECS RAM role / RoleArn AssumeRole / AccessKey) + minimal RAM policy. |
+| [docs/INTEGRATION-TESTS.md](docs/INTEGRATION-TESTS.md) | envtest integration harness (`make test-integration`). |
+
+> `config/` is the kustomize **SSOT** for the deployment manifests (CRDs + RBAC +
+> controller + webhooks); ansible, the OLM bundle, and clusterctl all build from it.
+> The day-2 operational guides (scale / autoscaler / multi-AZ / worker-join) live in
+> the sibling `alibaba-openshift/docs/` — see its [docs index](https://github.com/SammZhu/alibaba-openshift/blob/main/docs/README.md).
+
 ## Development
 
 ### Build
