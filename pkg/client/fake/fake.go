@@ -24,6 +24,7 @@ type FakeClient struct {
 	DeleteECSInstanceFn      func(instanceID string, force bool) error
 	FindInstanceByTagFn      func(region, key, value string) (string, error)
 	ModifyInstanceMetadataFn func(instanceID, httpEndpoint, httpTokens string, hopLimit int) error
+	InstanceTypeCapacityFn   func(instanceType string) (int64, int64, error)
 	PutIgnitionObjectFn      func(params alibabaClient.IgnitionStoreParams) (string, error)
 	DeleteIgnitionObjectFn   func(params alibabaClient.IgnitionStoreParams) error
 }
@@ -66,6 +67,13 @@ func (f *FakeClient) ModifyInstanceMetadata(instanceID, httpEndpoint, httpTokens
 		return f.ModifyInstanceMetadataFn(instanceID, httpEndpoint, httpTokens, hopLimit)
 	}
 	return nil
+}
+
+func (f *FakeClient) InstanceTypeCapacity(instanceType string) (int64, int64, error) {
+	if f.InstanceTypeCapacityFn != nil {
+		return f.InstanceTypeCapacityFn(instanceType)
+	}
+	return 0, 0, nil
 }
 
 func (f *FakeClient) PutIgnitionObject(p alibabaClient.IgnitionStoreParams) (string, error) {

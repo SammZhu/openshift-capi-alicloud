@@ -155,6 +155,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err = (&infracontroller.AlibabaCloudMachineTemplateReconciler{
+		Client:                    mgr.GetClient(),
+		Scheme:                    mgr.GetScheme(),
+		Log:                       ctrl.Log.WithName("controllers").WithName("AlibabaCloudMachineTemplate"),
+		AlibabaCloudClientBuilder: alibabaClient.NewCAPIClient,
+	}).SetupWithManager(ctx, mgr, controller.Options{MaxConcurrentReconciles: concurrency}); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "AlibabaCloudMachineTemplate")
+		os.Exit(1)
+	}
+
 	if enableWebhooks {
 		if err = (&infrawebhook.AlibabaCloudMachineWebhook{}).SetupWebhookWithManager(mgr); err != nil {
 			setupLog.Error(err, "unable to create webhook", "webhook", "AlibabaCloudMachine")

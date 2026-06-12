@@ -345,6 +345,30 @@ func (c *alibabacloudClient) ModifyInstanceMetadata(instanceID, httpEndpoint, ht
 	return nil
 }
 
+// InstanceTypeCapacity returns the vCPU count and memory (MiB) of an ECS instance
+// type via DescribeInstanceTypes. Used to populate AlibabaCloudMachineTemplate
+// status.capacity for cluster-autoscaler scale-from-zero. The region is taken from
+// the client (the SDK signer fills RegionId); specs are region-independent.
+func (c *alibabacloudClient) InstanceTypeCapacity(instanceType string) (int64, int64, error) {
+	req := ecs.CreateDescribeInstanceTypesRequest()
+	req.InstanceTypes = &[]string{instanceType}
+	var resp *ecs.DescribeInstanceTypesResponse
+	err := retryThrottled("DescribeInstanceTypes", func() (e error) {
+		resp, e = c.ecsClient.DescribeInstanceTypes(req)
+		return e
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("DescribeInstanceTypes(%s): %w", instanceType, err)
+	}
+	for _, it := range resp.InstanceTypes.InstanceType {
+		if it.InstanceTypeId == instanceType {
+			// MemorySize is GiB (float, e.g. 16.0); convert to MiB.
+			return int64(it.CpuCoreCount), int64(it.MemorySize * 1024), nil
+		}
+	}
+	return 0, 0, fmt.Errorf("instance type %q not found by DescribeInstanceTypes", instanceType)
+}
+
 // MachineNameTagKey is the per-machine tag CAPA stamps on every instance it
 // creates (see the controller's toSDKTags). It is unique within a cluster and is
 // used both as the idempotency key for adopt-before-create AND as the durable

@@ -179,6 +179,10 @@ type Client interface {
 	// boots with tokenless IMDS for Ignition, then is flipped to httpTokens
 	// required once the node has joined.
 	ModifyInstanceMetadata(instanceID, httpEndpoint, httpTokens string, hopLimit int) error
+	// InstanceTypeCapacity returns the vCPU count and memory (in MiB) of an ECS
+	// instance type, for the AlibabaCloudMachineTemplate scale-from-zero capacity
+	// (cluster-autoscaler). Specs are static, so callers should cache the result.
+	InstanceTypeCapacity(instanceType string) (vcpu int64, memoryMiB int64, err error)
 
 	// Ignition (user-data) OSS offload — see oss.go.
 	PutIgnitionObject(params IgnitionStoreParams) (presignedURL string, err error)

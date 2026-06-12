@@ -7,7 +7,7 @@ rules:
     resources: [alibabacloudclusters, alibabacloudmachines, alibabacloudclustertemplates, alibabacloudmachinetemplates]
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [infrastructure.cluster.x-k8s.io]
-    resources: [alibabacloudclusters/status, alibabacloudmachines/status]
+    resources: [alibabacloudclusters/status, alibabacloudmachines/status, alibabacloudmachinetemplates/status]
     verbs: [get, update, patch]
   - apiGroups: [infrastructure.cluster.x-k8s.io]
     resources: [alibabacloudclusters/finalizers, alibabacloudmachines/finalizers]
