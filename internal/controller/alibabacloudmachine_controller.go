@@ -27,6 +27,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	infrav1 "github.com/SammZhu/openshift-capi-alicloud/api/v1beta1"
 	alibabaClient "github.com/SammZhu/openshift-capi-alicloud/pkg/client"
@@ -51,6 +52,18 @@ func (r *AlibabaCloudMachineReconciler) SetupWithManager(ctx context.Context, mg
 	log := ctrl.LoggerFrom(ctx)
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrav1.AlibabaCloudMachine{}).
+		// Watch the owning Machine so we re-reconcile when CAPI core mutates it —
+		// crucially when it binds status.nodeRef AFTER the node joins. Without this,
+		// the AlibabaCloudMachine only reconciles during provisioning (nodeRef still
+		// empty), so G14 IMDS hardening — gated on nodeRef — never fires until the
+		// next ~10h resync. MachineToInfrastructureMapFunc maps a Machine to its
+		// infrastructureRef target. (Found in live verification 2026-06-12.)
+		Watches(
+			&clusterv1.Machine{},
+			handler.EnqueueRequestsFromMapFunc(
+				util.MachineToInfrastructureMapFunc(infrav1.GroupVersion.WithKind("AlibabaCloudMachine")),
+			),
+		).
 		WithOptions(options).
 		WithEventFilter(predicates.ResourceNotPaused(mgr.GetScheme(), log)).
 		Complete(r)
