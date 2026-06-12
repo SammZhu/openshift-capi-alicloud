@@ -23,7 +23,7 @@ them into a clusterctl-labelled `infrastructure-components.yaml`:
 ```
 hack/gen-clusterctl-components.sh out/infrastructure-components.yaml
 # bake a real controller image (clusterctl has no ansible sed step):
-#   CAPA_IMAGE=quay.io/samzhu/openshift-capi-alicloud:v0.1.21 hack/gen-clusterctl-components.sh ...
+#   CAPA_IMAGE=quay.io/samzhu/openshift-capi-alicloud:v0.1.22 hack/gen-clusterctl-components.sh ...
 # override the kustomize dir if needed: CAPA_KUSTOMIZE_DIR=/path/to/config/default
 ```
 
@@ -39,11 +39,11 @@ Point clusterctl at the artifacts via a provider entry + the overrides tree:
 ```yaml
 providers:
   - name: alibabacloud
-    url: file:///home/you/.cluster-api/overrides/infrastructure-alibabacloud/v0.1.21/infrastructure-components.yaml
+    url: file:///home/you/.cluster-api/overrides/infrastructure-alibabacloud/v0.1.22/infrastructure-components.yaml
     type: InfrastructureProvider
 ```
 
-`~/.cluster-api/overrides/infrastructure-alibabacloud/v0.1.21/`
+`~/.cluster-api/overrides/infrastructure-alibabacloud/v0.1.22/`
 ```
 infrastructure-components.yaml   # from step 1
 metadata.yaml                    # repo root
