@@ -3,7 +3,10 @@
 package controller
 
 import (
+	"context"
+	"sync"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -11,8 +14,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	infrav1 "github.com/SammZhu/openshift-capi-alicloud/api/v1beta1"
 	alibabaClient "github.com/SammZhu/openshift-capi-alicloud/pkg/client"
@@ -313,4 +319,106 @@ func TestIntegration_Machine_Lifecycle(t *testing.T) {
 	if err := k8sClient.Get(reconcileCtx(), client.ObjectKeyFromObject(ali), &infrav1.AlibabaCloudMachine{}); !apierrors.IsNotFound(err) {
 		t.Fatalf("expected the AlibabaCloudMachine gone after finalizer removal, get err = %v", err)
 	}
+}
+
+// TestIntegration_Machine_WatchHardensWhenNodeRefBindsLater is the regression for
+// the live-found G14 bug (2026-06-12): IMDS hardening is gated on the owning
+// Machine's nodeRef, which CAPI core binds AFTER the node joins. The controller
+// reconciled the AlibabaCloudMachine only during provisioning (nodeRef still
+// empty → "deferring") and the Running success path returns ctrl.Result{} with NO
+// requeue — so without a watch on the Machine, the later nodeRef bind never
+// re-enqueued it and hardening never happened (until the ~10h resync).
+//
+// The other integration tests can't catch this: they set nodeRef and call
+// Reconcile in the same breath, exercising the harden LOGIC but not the
+// re-enqueue. This one runs a REAL manager (so SetupWithManager's Machine watch is
+// live) and asserts hardening fires purely from binding nodeRef. Remove the
+// Watches(&Machine{}) and this test times out.
+func TestIntegration_Machine_WatchHardensWhenNodeRefBindsLater(t *testing.T) {
+	ns := freshNamespace(t)
+	ali := makeMachineFixture(t, ns, machineOpts{clusterReady: true, withBootstrap: true, httpTokensAfterBoot: "required"})
+
+	var mu sync.Mutex
+	hardened := "" // set by the fake when the controller flips IMDS
+	fc := &fakeclient.FakeClient{
+		CreateECSInstanceFn: func(alibabaClient.CreateInstanceParams) (*alibabaClient.CreateInstanceResponse, error) {
+			return &alibabaClient.CreateInstanceResponse{InstanceID: "i-watch"}, nil
+		},
+		DescribeInstanceByIDFn: func(id string) (*alibabaClient.InstanceDescription, error) {
+			return &alibabaClient.InstanceDescription{InstanceID: id, Status: "Running"}, nil
+		},
+		ModifyInstanceMetadataFn: func(_, _, tokens string, _ int) error {
+			mu.Lock()
+			hardened = tokens
+			mu.Unlock()
+			return nil
+		},
+	}
+	getHardened := func() string { mu.Lock(); defer mu.Unlock(); return hardened }
+
+	// Long resync so a periodic cache re-list cannot re-enqueue the machine — the
+	// ONLY re-trigger after provisioning must be the Machine watch, or the test is
+	// not actually guarding it.
+	syncPeriod := time.Hour
+	mgr, err := ctrl.NewManager(testEnv.Config, ctrl.Options{
+		Scheme:  testScheme,
+		Metrics: metricsserver.Options{BindAddress: "0"}, // disable; avoid port clashes
+		Cache:   cache.Options{SyncPeriod: &syncPeriod},
+	})
+	if err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+	r := &AlibabaCloudMachineReconciler{
+		Client:                    mgr.GetClient(),
+		Scheme:                    testScheme,
+		Log:                       ctrl.Log.WithName("test-machine-watch"),
+		AlibabaCloudClientBuilder: fakeBuilder(fc),
+	}
+	if err := r.SetupWithManager(context.Background(), mgr, controller.Options{}); err != nil {
+		t.Fatalf("SetupWithManager: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = mgr.Start(ctx) }()
+
+	key := client.ObjectKeyFromObject(ali)
+
+	// The controller provisions and settles in the DEFERRED state: InstanceID set,
+	// Ready, but NOT hardened (nodeRef is still empty).
+	requireEventually(t, 25*time.Second, func() bool {
+		m := &infrav1.AlibabaCloudMachine{}
+		return k8sClient.Get(context.Background(), key, m) == nil && m.Status.InstanceID != nil
+	}, "AlibabaCloudMachine never provisioned (got an InstanceID)")
+	if h := getHardened(); h != "" {
+		t.Fatalf("IMDS hardened before nodeRef bound (must defer, G14 timing): %q", h)
+	}
+
+	// Bind nodeRef on the owning Machine. With the Machine watch this re-enqueues
+	// the AlibabaCloudMachine within ~a second and it hardens. Without the watch the
+	// only re-trigger is a periodic ~30s cache relist (and in production the
+	// reconcile settles entirely → hardening never happens) — so a tight window
+	// both reflects the real requirement (IMDS must harden PROMPTLY after join) and
+	// makes removing Watches(&Machine{}) fail this test.
+	setMachineNodeRef(t, ns, "node-watch")
+
+	requireEventually(t, 12*time.Second, func() bool {
+		m := &infrav1.AlibabaCloudMachine{}
+		if k8sClient.Get(context.Background(), key, m) != nil {
+			return false
+		}
+		return getHardened() == "required" && m.Status.MetadataHardened != nil && *m.Status.MetadataHardened
+	}, "IMDS not hardened promptly after nodeRef bound — the Machine watch did not re-enqueue (G14 regression)")
+}
+
+// requireEventually polls cond until it returns true or the timeout elapses.
+func requireEventually(t *testing.T, timeout time.Duration, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	t.Fatalf("timed out after %s: %s", timeout, msg)
 }
