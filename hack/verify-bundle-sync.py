@@ -117,7 +117,7 @@ canon = normalize(canonical_deployment()["spec"])
 mine = normalize(csv_dep[0]["spec"])
 d = list(diff(canon, mine, "spec"))
 if d:
-    fail("CSV deployment spec drifted from 02-capa-controller.yaml:\n" + "\n".join(d))
+    fail("CSV deployment spec drifted from config/manager/deployment.yaml:\n" + "\n".join(d))
 
 # guard: the cert volume really is the only thing the CSV drops (so the
 # allowlist can't silently hide a future, different omission).
