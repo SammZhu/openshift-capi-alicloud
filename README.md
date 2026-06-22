@@ -1,26 +1,60 @@
 # openshift-capi-alicloud
 
-Cluster API Infrastructure Provider for Alibaba Cloud — designed for running
-**OpenShift** on Alibaba Cloud ECS using the
-[Cluster API (CAPI)](https://cluster-api.sigs.k8s.io/) framework.
+A [Cluster API (CAPI)](https://cluster-api.sigs.k8s.io/) **infrastructure
+provider for Alibaba Cloud**. It manages the lifecycle of Alibaba Cloud ECS
+worker machines — create, scale, multi-AZ spread, health remediation, delete —
+for a Cluster API management cluster, implementing the CAPI **v1beta2**
+infrastructure contract.
+
+It installs on any conformant Kubernetes management cluster via `clusterctl`, and
+is also used in production for **OpenShift on Alibaba Cloud** (as the day-2 worker
+plane on top of an externally-installed control plane). See [Quick Start](#quick-start).
+
+> [!IMPORTANT]
+> **Unofficial, community-maintained project.** Not affiliated with, endorsed by,
+> or supported by Alibaba Cloud, Red Hat, or OpenShift. "Alibaba Cloud" and
+> "OpenShift" are trademarks of their respective owners and are used here only to
+> describe the target platform. Licensed under Apache-2.0; provided as-is.
+
+## Compatibility
+
+| This provider | CAPI contract | CAPI core (vendored) | Kubernetes (tested) | clusterctl |
+|---|---|---|---|---|
+| `v0.1.x` | `v1beta2` | `v1.12.7` | 1.31 – 1.33 | ≥ `v1.11` |
+
+Webhook serving certificates are issued by **cert-manager** on vanilla Kubernetes
+(the `clusterctl` artifacts; `clusterctl init` installs cert-manager) or by
+**OpenShift service-ca** on OpenShift (the ansible / OLM path). Same controller
+image and contract on both — see [docs/CLUSTERCTL.md](docs/CLUSTERCTL.md).
 
 ## Overview
 
-This provider implements the CAPI Infrastructure contract for Alibaba Cloud:
+This provider implements the CAPI Infrastructure contract for Alibaba Cloud.
+The CRDs are served at API version `v1beta1` and carry the `v1beta2` contract
+label (`cluster.x-k8s.io/v1beta2`):
 
-| Resource | API | Status |
+| Resource | API group/version | Status |
 |---|---|---|
-| `AlibabaCloudCluster` | `infrastructure.cluster.x-k8s.io/v1beta1` | External Platform mode (pre-created VPC/SLB) |
+| `AlibabaCloudCluster` | `infrastructure.cluster.x-k8s.io/v1beta1` | External-platform mode (adopts pre-created VPC/SLB) |
 | `AlibabaCloudMachine` | `infrastructure.cluster.x-k8s.io/v1beta1` | Fully implemented |
 | `AlibabaCloudMachineTemplate` | `infrastructure.cluster.x-k8s.io/v1beta1` | Fully implemented |
+| `AlibabaCloudControlPlane` | `controlplane.cluster.x-k8s.io/v1beta1` | Externally-managed control plane (`mode: external`) |
 | `AlibabaCloudClusterTemplate` | `infrastructure.cluster.x-k8s.io/v1beta1` | Spec only (no controller) |
+
+### Scope / maturity
+
+Alpha (`v0.1.x`). Production scope today is the **day-2 worker plane + externally-
+managed control plane**: the control plane is installed out-of-band (e.g. OpenShift
+Assisted/Agent-based installer, or any existing cluster) and this provider manages
+worker `Machine`s against it. Greenfield full-cluster provisioning (CAPI creating
+the control plane) is not implemented. Single-maintainer, best-effort support.
 
 ### Design: External Platform mode
 
 The primary use case is an OpenShift cluster installed via
 **Agent-based or Assisted Installer** into a VPC and SLB pre-created by the
-[ROS template](../alibaba-openshift/ros-templates/create-cluster.yaml) in the
-`alibaba-openshift` repository.
+[ROS templates](https://github.com/SammZhu/alibaba-openshift/tree/main/ros-templates)
+in the companion `alibaba-openshift` repository.
 
 In this mode:
 - VPC and SLB already exist — the Cluster controller adopts them (no creation/deletion)
@@ -133,17 +167,31 @@ and downstream automation behave predictably:
 
 ## Quick Start
 
-### 1. Install CAPI CRDs and controller
+### 1. Install the provider
+
+**Recommended — `clusterctl`** (works on any conformant Kubernetes management
+cluster; installs cert-manager + CAPI core automatically):
 
 ```sh
-# Apply CRDs
-kubectl apply -f config/crd/bases/
+# Tell clusterctl where to find this provider (released artifacts on GitHub):
+cat >> ~/.cluster-api/clusterctl.yaml <<'EOF'
+providers:
+  - name: alibabacloud
+    url: https://github.com/SammZhu/openshift-capi-alicloud/releases/latest/download/infrastructure-components.yaml
+    type: InfrastructureProvider
+EOF
 
-# Apply RBAC
-kubectl apply -f config/rbac/
+clusterctl init --infrastructure alibabacloud
+```
 
-# Deploy controller (update image tag as needed)
-kubectl apply -f config/manager/manager.yaml
+See [docs/CLUSTERCTL.md](docs/CLUSTERCTL.md) for the override layout, generating a
+worker pool with `clusterctl generate cluster`, and the hermetic kind smoke test.
+
+**Alternative — raw manifests** (e.g. OpenShift, where service-ca issues the
+webhook cert; this is what the ansible flow applies):
+
+```sh
+kubectl apply -k config/default    # CRDs + RBAC + controller + webhooks (service-ca)
 ```
 
 ### 2. Create worker user-data Secret

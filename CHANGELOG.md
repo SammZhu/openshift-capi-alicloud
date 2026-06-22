@@ -4,6 +4,47 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project aims to
 follow semantic versioning once it reaches a stable API.
 
+## [v0.1.24] — clusterctl release + cert-manager (vanilla-Kubernetes installable)
+
+- Publish the clusterctl discovery artifacts (`infrastructure-components.yaml` +
+  `metadata.yaml` + `cluster-template.yaml`) as GitHub Release assets on every
+  `v*` tag (CI `release` job).
+- New `config/clusterctl` kustomize overlay: webhook serving cert via
+  **cert-manager** (the CAPI standard) so the provider installs on any conformant
+  Kubernetes cluster with `clusterctl init`. The OpenShift path (`config/default`,
+  service-ca; ansible + OLM bundle) is unchanged.
+- Verified end-to-end on kind (`make test-clusterctl-smoke`) and via `clusterctl`
+  against the published release.
+
+## [v0.1.23] — worker ECS identification
+
+- Set the ECS `InstanceName` to the CAPI Machine name so worker instances are
+  attributable in the Alibaba Cloud console (previously the opaque `iZ…Z` default).
+
+## [v0.1.13 – v0.1.19] — multi-AZ worker plane + externally-managed control plane
+
+- **v0.1.13**: full CAPI **v1beta2** infrastructure contract — contract labels on
+  the infra CRDs + `status.initialization.provisioned`; fixes `Cluster.status.
+  failureDomains` population and `infrastructureReady`.
+- **v0.1.14 / v0.1.15**: `providerID` in CCM-aligned dotted form + persistence
+  (immutable-once-set zoneID/vSwitchID webhook), so `Machine.spec.providerID`
+  matches `Node.spec.providerID` and `nodeRef` binds.
+- **v0.1.16**: `AlibabaCloudControlPlane` (`mode: external`) — externally-managed
+  control plane that reports `controlPlaneInitialized`, unblocking
+  `MachineDeployment` readiness for the worker-only topology.
+- **v0.1.19**: worker IMDS hardening — boot with IMDSv1 (so RHCOS Ignition can
+  fetch user-data) then flip the instance to IMDSv2 once it has joined.
+
+## [v0.1.4 – v0.1.12] — worker pools, health checks, air-gap
+
+- Multi-AZ worker pools via per-zone `MachineDeployment` + `failureDomains`;
+  `MachineHealthCheck` (v1beta2 layout); scale-up/down with clean ECS reclaim.
+- Self-bundled CAPI core controller for the worker-only topology (no managed CAPI
+  on the target cluster).
+- Air-gap image handling (digest-pinned controller image + IDMS/ITMS mirror
+  redirects); single image-tag source of truth.
+- OLM bundle + `clusterctl` artifacts (metadata, cluster-template) introduced.
+
 ## [v0.1.3] — CAPI contract compliance (PR1)
 
 Container image: `quay.io/samzhu/openshift-capi-alicloud:v0.1.3`
