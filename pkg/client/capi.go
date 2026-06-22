@@ -36,10 +36,15 @@ type DataDiskParam struct {
 
 // CreateInstanceParams holds the parameters for creating an ECS instance via CAPI.
 type CreateInstanceParams struct {
-	RegionID                   string
-	ZoneID                     string
-	InstanceType               string
-	ImageID                    string
+	RegionID     string
+	ZoneID       string
+	InstanceType string
+	ImageID      string
+	// InstanceName sets the ECS instance display name (the "name" column in the
+	// console). Empty leaves the Alibaba default, which is an opaque iZ<id>Z string
+	// that is impossible to attribute to a Machine. The controller sets it to the
+	// CAPI Machine name so a worker ECS reads e.g. "caworkers-c-xxxxx-yyyyy".
+	InstanceName               string
 	SecurityGroupIDs           []string
 	VSwitchID                  string
 	SystemDiskCategory         string
@@ -433,6 +438,12 @@ func (c *alibabacloudClient) CreateECSInstance(params CreateInstanceParams) (*Cr
 	req.ZoneId = params.ZoneID
 	req.InstanceType = params.InstanceType
 	req.ImageId = params.ImageID
+	if params.InstanceName != "" {
+		// Console display name only. Deliberately NOT setting HostName: that would
+		// change the node's OS hostname (and thus the Kubernetes Node name + CSRs),
+		// a larger blast radius than the console-identification this addresses.
+		req.InstanceName = params.InstanceName
+	}
 	req.VSwitchId = params.VSwitchID
 	req.SystemDiskCategory = params.SystemDiskCategory
 	req.SystemDiskSize = fmt.Sprintf("%d", params.SystemDiskSize)
