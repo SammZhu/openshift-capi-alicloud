@@ -18,11 +18,12 @@
 #                  fails on the DUMMY credentials — proving the path got past
 #                  admission/contract to the cloud SDK, without crashlooping.
 #
-# HERMETIC: no real Alibaba AK/SK, NO ECS is provisioned. The webhook TLS is
-# normally minted by the OpenShift service-ca operator (absent on kind), so this
-# script self-signs a serving cert + injects the caBundle.
+# HERMETIC: no real Alibaba AK/SK, NO ECS is provisioned. This exercises the
+# clusterctl/vanilla-Kubernetes artifact (config/clusterctl) whose webhook TLS is
+# issued by cert-manager — which `clusterctl init` installs as a hard dependency —
+# so there is nothing to self-sign (that was the old OpenShift service-ca path).
 #
-# Requires: kind, clusterctl (>=v1.11 for the v1beta2 contract), kubectl, openssl,
+# Requires: kind, clusterctl (>=v1.11 for the v1beta2 contract), kubectl,
 # python3. Container runtime: docker if present, else podman
 # (KIND_EXPERIMENTAL_PROVIDER=podman; bump the podman machine to >=4GiB).
 #
@@ -33,8 +34,8 @@ set -euo pipefail
 CLUSTER="${CLUSTER:-capa-smoke}"
 PROVIDER_NS=capa-system
 WORKLOAD_NS=default
-CAPA_IMAGE="${CAPA_IMAGE:-quay.io/samzhu/openshift-capi-alicloud:v0.1.22}"
-VERSION="${CAPA_VERSION:-v0.1.22}"
+CAPA_IMAGE="${CAPA_IMAGE:-quay.io/samzhu/openshift-capi-alicloud:v0.1.23}"
+VERSION="${CAPA_VERSION:-v0.1.23}"
 K8S_VERSION="${K8S_VERSION:-v1.33.0}"
 WORKER_BOOTSTRAP_SECRET="${WORKER_BOOTSTRAP_SECRET:-capa-smoke-bootstrap}"
 
@@ -62,7 +63,7 @@ trap cleanup EXIT
 
 # ---- preflight -------------------------------------------------------------
 step "Preflight"
-for t in kind clusterctl kubectl openssl python3; do
+for t in kind clusterctl kubectl python3; do
   command -v "$t" >/dev/null 2>&1 || { red "missing tool: $t"; exit 2; }
 done
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
@@ -78,7 +79,10 @@ echo "  clusterctl: $(clusterctl version -o short 2>/dev/null)   kind: $(kind ve
 # ---- build the clusterctl override layout ----------------------------------
 step "Assemble clusterctl provider repo ($VERSION, image $CAPA_IMAGE)"
 mkdir -p "$ovr"
-CAPA_IMAGE="$CAPA_IMAGE" "$here/hack/gen-clusterctl-components.sh" "$ovr/infrastructure-components.yaml"
+# Render the clusterctl/vanilla overlay (cert-manager webhook certs), NOT the
+# OpenShift service-ca default — this is what real clusterctl users install.
+CAPA_KUSTOMIZE_DIR="$here/config/clusterctl" \
+  CAPA_IMAGE="$CAPA_IMAGE" "$here/hack/gen-clusterctl-components.sh" "$ovr/infrastructure-components.yaml"
 cp "$here/metadata.yaml" "$ovr/metadata.yaml"
 cp "$here/templates/cluster-template.yaml" "$ovr/cluster-template.yaml"
 
@@ -107,40 +111,25 @@ kind delete cluster --name "$CLUSTER" >/dev/null 2>&1 || true
 kind create cluster --name "$CLUSTER" --wait 120s
 kubectl cluster-info --context "kind-$CLUSTER" >/dev/null
 
-# ---- pre-create namespace + the two Secrets the manager needs --------------
+# ---- pre-create namespace + the creds Secret the manager needs -------------
 # alibaba-creds (envFrom optional=false) MUST exist or the pod sits in
 # CreateContainerConfigError and clusterctl init times out. The webhook serving
-# cert is normally minted by service-ca (absent on kind) — self-sign it here.
-step "Pre-seed namespace, dummy creds, and self-signed webhook cert"
+# cert is issued by cert-manager (which `clusterctl init` installs) from the
+# Issuer + Certificate baked into the components — nothing to self-sign, and the
+# cainjector fills each webhook's caBundle automatically.
+step "Pre-seed namespace + dummy creds"
 kubectl create namespace "$PROVIDER_NS" >/dev/null 2>&1 || true
 kubectl -n "$PROVIDER_NS" create secret generic alibaba-creds \
   --from-literal=ALIBABA_CLOUD_ACCESS_KEY_ID=SMOKE_DUMMY_AK \
   --from-literal=ALIBABA_CLOUD_ACCESS_KEY_SECRET=SMOKE_DUMMY_SK \
   --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 
-svc=capa-webhook-service
-cn="${svc}.${PROVIDER_NS}.svc"
-openssl req -x509 -newkey rsa:2048 -nodes -keyout "$work/ca.key" -out "$work/ca.crt" \
-  -days 3650 -subj "/CN=capa-smoke-webhook-ca" >/dev/null 2>&1
-openssl req -newkey rsa:2048 -nodes -keyout "$work/tls.key" -out "$work/tls.csr" \
-  -subj "/CN=${cn}" >/dev/null 2>&1
-openssl x509 -req -in "$work/tls.csr" -CA "$work/ca.crt" -CAkey "$work/ca.key" \
-  -CAcreateserial -out "$work/tls.crt" -days 3650 \
-  -extfile <(printf "subjectAltName=DNS:%s,DNS:%s.cluster.local" "$cn" "$cn") >/dev/null 2>&1
-kubectl -n "$PROVIDER_NS" create secret tls capa-webhook-server-cert \
-  --cert="$work/tls.crt" --key="$work/tls.key" \
-  --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-CABUNDLE="$(base64 < "$work/ca.crt" | tr -d '\n')"
-
 # ---- clusterctl init -------------------------------------------------------
+# Installs cert-manager (hard dependency) + CAPI core + this provider. cert-manager
+# then issues capa-webhook-server-cert from our Certificate and injects the
+# caBundle into both webhook configs (the service-ca/self-sign dance is gone).
 step "clusterctl init --infrastructure alibabacloud"
 clusterctl init --config "$cfg" --infrastructure "alibabacloud:${VERSION}"
-
-# ---- inject the caBundle the webhooks expect (service-ca would do this) -----
-kubectl patch mutatingwebhookconfiguration capa-mutating-webhook-configuration --type=json \
-  -p "[{\"op\":\"add\",\"path\":\"/webhooks/0/clientConfig/caBundle\",\"value\":\"$CABUNDLE\"}]" >/dev/null
-kubectl patch validatingwebhookconfiguration capa-validating-webhook-configuration --type=json \
-  -p "[{\"op\":\"add\",\"path\":\"/webhooks/0/clientConfig/caBundle\",\"value\":\"$CABUNDLE\"},{\"op\":\"add\",\"path\":\"/webhooks/1/clientConfig/caBundle\",\"value\":\"$CABUNDLE\"}]" >/dev/null
 
 # ---- [install] assertion ---------------------------------------------------
 step "[install] provider controller Available"

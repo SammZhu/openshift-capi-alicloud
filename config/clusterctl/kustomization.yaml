@@ -1,0 +1,23 @@
+# clusterctl / vanilla-Kubernetes overlay.
+#
+# Same deployable provider as config/default (CRDs + RBAC + controller + webhooks),
+# but the webhook serving cert comes from cert-manager instead of OpenShift
+# service-ca — so it installs on any conformant Kubernetes management cluster via
+# `clusterctl init --infrastructure alibabacloud` (clusterctl installs cert-manager
+# itself). hack/gen-clusterctl-components.sh renders THIS overlay for the release
+# artifacts; ansible (08-deploy-post-install) and the OLM bundle keep config/default
+# (service-ca), so the OpenShift path is unchanged.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../crd
+  - ../rbac
+  - ../manager
+  - ../webhook
+  - ../certmanager
+patches:
+  # Drop the service-ca serving-cert annotation — cert-manager creates the Secret.
+  - path: patch-service.yaml
+  # Swap service-ca caBundle injection for cert-manager's cainjector.
+  - path: patch-mutating-webhook.yaml
+  - path: patch-validating-webhook.yaml

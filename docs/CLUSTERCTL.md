@@ -16,20 +16,26 @@ This provider ships the three artifacts `clusterctl` needs:
 
 ## 1. Generate the components
 
-The CRD/RBAC/controller/webhook manifests come from this repo's kustomize SSOT
-`config/default` (the SAME source Phase 08 and the OLM bundle build from). Render
-them into a clusterctl-labelled `infrastructure-components.yaml`:
+The CRD/RBAC/controller/webhook manifests come from this repo's kustomize SSOT.
+There are two overlays over the same base:
+- `config/clusterctl` — **the clusterctl/vanilla-Kubernetes overlay** (webhook cert
+  via cert-manager). This is what the release artifacts use.
+- `config/default` — the OpenShift overlay (webhook cert via service-ca), built by
+  Phase 08 and mirrored by the OLM bundle.
+
+Render the clusterctl artifacts (use `make release`, which selects `config/clusterctl`):
 
 ```
-hack/gen-clusterctl-components.sh out/infrastructure-components.yaml
+make release   # -> out/{infrastructure-components,metadata,cluster-template}.yaml
 # bake a real controller image (clusterctl has no ansible sed step):
-#   CAPA_IMAGE=quay.io/samzhu/openshift-capi-alicloud:v0.1.22 hack/gen-clusterctl-components.sh ...
-# override the kustomize dir if needed: CAPA_KUSTOMIZE_DIR=/path/to/config/default
+#   CAPA_IMAGE=quay.io/samzhu/openshift-capi-alicloud:v0.1.23 make release
+# under the hood: CAPA_KUSTOMIZE_DIR=config/clusterctl hack/gen-clusterctl-components.sh
 ```
 
-It runs `kubectl kustomize config/default` and stamps every object with
+It runs `kubectl kustomize config/clusterctl` and stamps every object with
 `cluster.x-k8s.io/provider: infrastructure-alibabacloud` so clusterctl can
-track/move/delete the provider. `make release` wraps this + copies metadata/template.
+track/move/delete the provider. On a `v*` tag, CI publishes these three files as
+GitHub Release assets automatically (see `.github/workflows/ci.yaml`).
 
 ## 2. Local-override layout
 
@@ -103,9 +109,13 @@ Requires `kind` + `clusterctl` (>=v1.11 for the v1beta2 contract) + a container
 runtime (docker, else podman with `KIND_EXPERIMENTAL_PROVIDER=podman` and the
 machine bumped to ≥4GiB). `KEEP_CLUSTER=1` leaves the cluster up for debugging.
 
-Note the webhook TLS: the canonical manifests mint the serving cert the
-OpenShift-native way (service-ca), which kind lacks — so the smoke self-signs the
-`capa-webhook-server-cert` Secret and injects the `caBundle` itself.
+Note the webhook TLS: the clusterctl artifacts are rendered from the
+`config/clusterctl` overlay, whose webhook serving cert is issued by **cert-manager**
+(`clusterctl init` installs cert-manager as a hard dependency; its cainjector fills
+each webhook's `caBundle` from the bundled `Issuer` + `Certificate`). This is the
+portable, vanilla-Kubernetes path — no OpenShift service-ca and nothing to
+self-sign. The OpenShift deploy (ansible `08-deploy-post-install`) and the OLM
+bundle keep `config/default`, where the cert is minted by service-ca instead.
 
 ## Status / follow-up
 - `metadata.yaml` + `cluster-template.yaml` are first-class in this repo.
