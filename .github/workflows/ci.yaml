@@ -210,6 +210,8 @@ jobs:
       - name: Generate clusterctl release artifacts
         env:
           CAPA_IMAGE: quay.io/samzhu/openshift-capi-alicloud:${{ github.ref_name }}
+          # cert-manager webhook certs (vanilla-k8s), not OpenShift service-ca.
+          CAPA_KUSTOMIZE_DIR: ${{ github.workspace }}/config/clusterctl
         run: |
           hack/gen-clusterctl-components.sh out/infrastructure-components.yaml
           cp metadata.yaml out/metadata.yaml

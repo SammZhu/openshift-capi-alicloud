@@ -1,0 +1,9 @@
+# Remove the OpenShift service-ca annotation; under cert-manager the serving-cert
+# Secret is created by the Certificate in config/certmanager, not service-ca.
+apiVersion: v1
+kind: Service
+metadata:
+  name: capa-webhook-service
+  namespace: capa-system
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: null

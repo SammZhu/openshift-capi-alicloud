@@ -1,0 +1,31 @@
+# cert-manager-issued webhook serving cert for the clusterctl / vanilla-Kubernetes
+# install path. On OpenShift the cert is minted by service-ca (config/default,
+# config/webhook annotations); off OpenShift there is no service-ca, so the
+# clusterctl overlay (config/clusterctl) uses cert-manager instead — the standard
+# Cluster API webhook-cert mechanism (`clusterctl init` installs cert-manager and
+# its cainjector fills each webhook's caBundle from this Certificate).
+#
+# The secretName MUST match the Secret the controller Deployment mounts at
+# /tmp/k8s-webhook-server/serving-certs (capa-webhook-server-cert), and the
+# dnsNames MUST match the webhook Service (capa-webhook-service.capa-system.svc).
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: capa-selfsigned-issuer
+  namespace: capa-system
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: capa-serving-cert
+  namespace: capa-system
+spec:
+  secretName: capa-webhook-server-cert
+  dnsNames:
+    - capa-webhook-service.capa-system.svc
+    - capa-webhook-service.capa-system.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: capa-selfsigned-issuer

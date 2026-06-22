@@ -143,8 +143,8 @@ verify-manifests: verify-bundle ## Verify bundle CRDs match config/crd/bases (SS
 # Emit the clusterctl release artifacts (components + metadata + template) into out/
 # from the config/ SSOT. CAPA_IMAGE pins the controller image.
 .PHONY: release
-release: ## Emit clusterctl release artifacts into out/ from config/ SSOT
-	hack/gen-clusterctl-components.sh out/infrastructure-components.yaml
+release: ## Emit clusterctl release artifacts into out/ from the config/clusterctl SSOT (cert-manager webhook certs, vanilla-k8s)
+	CAPA_KUSTOMIZE_DIR=$(CURDIR)/config/clusterctl hack/gen-clusterctl-components.sh out/infrastructure-components.yaml
 	cp metadata.yaml out/metadata.yaml
 	cp templates/cluster-template.yaml out/cluster-template.yaml
 	@echo "clusterctl release artifacts in out/"
