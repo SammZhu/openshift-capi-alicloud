@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a problem with the Alibaba Cloud Cluster API provider
+labels: ["kind/bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Please fill in the details below.
+        **Do not report security issues here** — see [SECURITY.md](../blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what actually happened.
+    validations:
+      required: true
+  - type: input
+    id: provider-version
+    attributes:
+      label: Provider version
+      placeholder: v0.1.24
+    validations:
+      required: true
+  - type: input
+    id: capi-version
+    attributes:
+      label: Cluster API core version
+      placeholder: v1.12.x
+  - type: input
+    id: versions
+    attributes:
+      label: Kubernetes / clusterctl version
+      placeholder: mgmt k8s v1.33, clusterctl v1.13
+  - type: dropdown
+    id: install-path
+    attributes:
+      label: Install path
+      options:
+        - clusterctl (vanilla Kubernetes, cert-manager)
+        - OpenShift (ansible / service-ca)
+        - OLM bundle
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+  - type: textarea
+    id: logs
+    attributes:
+      label: Controller logs / relevant output
+      description: e.g. `kubectl -n capa-system logs deploy/capa-controller-manager`
+      render: shell
