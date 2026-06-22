@@ -299,6 +299,33 @@ func TestFindOrCreate_PersistsResolvedRegionOnSpec(t *testing.T) {
 	}
 }
 
+// createInstance must set the ECS InstanceName (console display name) to the CAPI
+// Machine name, so a worker ECS is attributable in the console instead of showing
+// the opaque iZ<id>Z default. (Operability: the un-named/un-OCP-tagged worker ECS
+// were indistinguishable in the ECS console.)
+func TestFindOrCreate_SetsInstanceNameToMachineName(t *testing.T) {
+	var gotInstanceName string
+	fakeECS := &fakeclient.FakeClient{
+		CreateECSInstanceFn: func(p alibabaClient.CreateInstanceParams) (*alibabaClient.CreateInstanceResponse, error) {
+			gotInstanceName = p.InstanceName
+			return &alibabaClient.CreateInstanceResponse{InstanceID: "i-new"}, nil
+		},
+	}
+	r := &AlibabaCloudMachineReconciler{}
+	aliMachine := &infrav1.AlibabaCloudMachine{
+		Spec: infrav1.AlibabaCloudMachineSpec{InstanceType: "ecs.c6.large", ImageID: "m-test"},
+	}
+	aliCluster := &infrav1.AlibabaCloudCluster{Spec: infrav1.AlibabaCloudClusterSpec{Region: "cn-shanghai"}}
+	machine := &clusterv1.Machine{ObjectMeta: metav1.ObjectMeta{Name: "caworkers-c-abc12-xy34"}}
+
+	if _, err := r.findOrCreateInstance(context.Background(), fakeECS, machine, aliCluster, aliMachine); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotInstanceName != "caworkers-c-abc12-xy34" {
+		t.Errorf("InstanceName = %q, want caworkers-c-abc12-xy34 (the Machine name)", gotInstanceName)
+	}
+}
+
 // ── Reconcile — top-level paths ─────────────────────────────────────────────────
 
 func TestReconcile_MachineNotFound(t *testing.T) {

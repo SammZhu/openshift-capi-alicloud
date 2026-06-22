@@ -669,6 +669,7 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 		ZoneID:                     alibabaCloudMachine.Spec.ZoneID,
 		InstanceType:               alibabaCloudMachine.Spec.InstanceType,
 		ImageID:                    imageID,
+		InstanceName:               machine.Name,
 		SecurityGroupIDs:           alibabaCloudMachine.Spec.SecurityGroupIDs,
 		VSwitchID:                  alibabaCloudMachine.Spec.VSwitchID,
 		SystemDiskCategory:         diskCategory,
