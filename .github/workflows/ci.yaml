@@ -185,3 +185,42 @@ jobs:
           git add "$file"
           git commit -m "chore(images): bump capa_image_tag to ${TAG} (auto from provider CI)"
           git push origin main
+
+  release:
+    name: Publish clusterctl release artifacts
+    runs-on: ubuntu-latest
+    needs: container-build
+    # On a v* tag, generate the clusterctl artifacts (infrastructure-components +
+    # metadata + cluster-template) from the config/ kustomize SSOT, baking the just-
+    # pushed image, and publish them as GitHub Release assets. This is how clusterctl
+    # (and the upstream provider list) discover the provider: the release URL serves
+    # these three files. Idempotent — re-running updates the release's assets.
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Ensure PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Generate clusterctl release artifacts
+        env:
+          CAPA_IMAGE: quay.io/samzhu/openshift-capi-alicloud:${{ github.ref_name }}
+        run: |
+          hack/gen-clusterctl-components.sh out/infrastructure-components.yaml
+          cp metadata.yaml out/metadata.yaml
+          cp templates/cluster-template.yaml out/cluster-template.yaml
+          ls -l out/
+
+      - name: Publish GitHub Release with clusterctl assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/infrastructure-components.yaml
+            out/metadata.yaml
+            out/cluster-template.yaml
+          fail_on_unmatched_files: true
