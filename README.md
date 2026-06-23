@@ -167,6 +167,10 @@ and downstream automation behave predictably:
 
 ## Quick Start
 
+> For a full walkthrough (Alibaba prerequisites, credentials, worker bootstrap
+> data, verification, troubleshooting) see **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)**.
+> The steps below are the condensed version.
+
 ### 1. Install the provider
 
 **Recommended — `clusterctl`** (works on any conformant Kubernetes management
@@ -290,6 +294,7 @@ See `examples/capi-machinedeployment.yaml` — Scenario B for the full multi-AZ 
 ## Documentation
 | Doc | What |
 |-----|------|
+| [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md) | **Start here** — end-to-end: prerequisites, install, credentials, worker bootstrap, create a pool, verify, troubleshooting. |
 | [docs/CLUSTERCTL.md](docs/CLUSTERCTL.md) | Install via `clusterctl` (metadata / components / cluster-template) + the kind smoke. |
 | [docs/OPERATOR-BUNDLE.md](docs/OPERATOR-BUNDLE.md) | OLM bundle (CSV / owned CRDs / webhookdefinitions) — community-operator prep. |
 | [docs/RAM-POLICY.md](docs/RAM-POLICY.md) | Controller credential modes (ECS RAM role / RoleArn AssumeRole / AccessKey) + minimal RAM policy. |
