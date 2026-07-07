@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format loosely
 follows [Keep a Changelog](https://keepachangelog.com/), and the project aims to
 follow semantic versioning once it reaches a stable API.
 
+## [Unreleased]
+
+- **security**: fix 4 reachable vulnerabilities found by `govulncheck` — bump
+  `golang.org/x/net` to v0.56.0 (GO-2026-5026, idna) and the Go build toolchain
+  to 1.26.4 (GO-2026-5037/5038/5039 in crypto/x509, mime, net/textproto).
+- **ci**: add a `govulncheck` gate to the Build & Test job so future vulnerabilities
+  (module + standard library) are caught on every push/PR.
+
 ## [v0.1.24] — clusterctl release + cert-manager (vanilla-Kubernetes installable)
 
 - Publish the clusterctl discovery artifacts (`infrastructure-components.yaml` +
