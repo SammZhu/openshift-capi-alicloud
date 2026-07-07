@@ -41,6 +41,14 @@ jobs:
       - name: go test
         run: go test -v -count=1 -timeout=120s ./...
 
+      - name: govulncheck (Go vulnerability scan)
+        # Fails on vulnerabilities reachable from this module's code, including the
+        # Go standard library (build toolchain). Go-native — catches what Trivy on
+        # the final image would miss (source-level reachability).
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
   cross-compile:
     name: Cross-compile Linux amd64 binary
     runs-on: ubuntu-latest
