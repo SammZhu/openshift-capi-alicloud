@@ -227,7 +227,7 @@ jobs:
           ls -l out/
 
       - name: Publish GitHub Release with clusterctl assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             out/infrastructure-components.yaml
