@@ -8,7 +8,14 @@ infrastructure contract.
 
 It installs on any conformant Kubernetes management cluster via `clusterctl`, and
 is also used in production for **OpenShift on Alibaba Cloud** (as the day-2 worker
-plane on top of an externally-installed control plane). See [Quick Start](#quick-start).
+plane on top of an externally-installed control plane).
+
+> [!TIP]
+> **New here? Run `make demo`.** It installs the provider on a throwaway local
+> [kind](https://kind.sigs.k8s.io/) cluster and watches it reconcile in ~5
+> minutes — **no Alibaba account, no ECS spend**. Then read
+> **[docs/QUICKSTART.md](docs/QUICKSTART.md)** for real-cluster use and to figure
+> out [which project you need](docs/QUICKSTART.md#3-which-project-do-i-need).
 
 > [!IMPORTANT]
 > **Unofficial, community-maintained project.** Not affiliated with, endorsed by,
@@ -167,9 +174,12 @@ and downstream automation behave predictably:
 
 ## Quick Start
 
-> For a full walkthrough (Alibaba prerequisites, credentials, worker bootstrap
-> data, verification, troubleshooting) see **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)**.
-> The steps below are the condensed version.
+> **Start with [docs/QUICKSTART.md](docs/QUICKSTART.md)** — it walks you from a
+> no-cloud `make demo` to real use, and points you to the right sibling project.
+> For the full real-cluster walkthrough (Alibaba prerequisites, credentials,
+> worker bootstrap data, verification, troubleshooting) see
+> **[docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)**. The steps below are the
+> condensed version.
 
 ### 1. Install the provider
 

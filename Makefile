@@ -120,6 +120,12 @@ test-clusterctl-smoke: ## kind smoke: clusterctl install + external-CP reconcile
 	@command -v clusterctl >/dev/null 2>&1 || { echo "need 'clusterctl' on PATH (brew install clusterctl)"; exit 2; }
 	hack/kind-smoke.sh
 
+# Friendly alias for first-time users: the SAME hermetic kind run as
+# test-clusterctl-smoke, framed as a "watch it work in ~5 min, no cloud" demo.
+# See docs/QUICKSTART.md. KEEP_CLUSTER=1 leaves the kind cluster up to poke at.
+.PHONY: demo
+demo: test-clusterctl-smoke ## 5-minute hermetic demo: install the provider on kind and watch it reconcile (no Alibaba account, no ECS)
+
 # Assert the OLM bundle stays in sync: the CSV install-strategy Deployment matches
 # the canonical controller Deployment (config/manager/deployment.yaml) field-for-
 # field except the OLM-managed webhook cert volume + the image, and the CSV version
