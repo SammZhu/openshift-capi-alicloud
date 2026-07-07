@@ -34,12 +34,19 @@ set -euo pipefail
 CLUSTER="${CLUSTER:-capa-smoke}"
 PROVIDER_NS=capa-system
 WORKLOAD_NS=default
-CAPA_IMAGE="${CAPA_IMAGE:-quay.io/samzhu/openshift-capi-alicloud:v0.1.23}"
-VERSION="${CAPA_VERSION:-v0.1.23}"
 K8S_VERSION="${K8S_VERSION:-v1.33.0}"
 WORKER_BOOTSTRAP_SECRET="${WORKER_BOOTSTRAP_SECRET:-capa-smoke-bootstrap}"
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Version to exercise. Default = the newest release tag in this checkout, so
+# `make demo` always installs the LATEST published provider image (CI pushes
+# quay.io/.../openshift-capi-alicloud:<tag> on every v* tag). Override with
+# CAPA_VERSION (label + image tag) or CAPA_IMAGE (full ref). Falls back to a
+# pinned tag when the checkout has no tags (e.g. a shallow CI clone).
+default_version="$(git -C "$here" tag -l 'v*' --sort=-v:refname 2>/dev/null | head -1)"
+VERSION="${CAPA_VERSION:-${default_version:-v0.1.24}}"
+CAPA_IMAGE="${CAPA_IMAGE:-quay.io/samzhu/openshift-capi-alicloud:${VERSION}}"
 work="$(mktemp -d)"
 ovr="$work/repo/infrastructure-alibabacloud/${VERSION}"
 cfg="$work/clusterctl.yaml"
