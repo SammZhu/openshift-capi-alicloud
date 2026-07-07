@@ -10,6 +10,18 @@ updates:
     groups:
       go-dependencies:
         patterns: ["*"]
+    ignore:
+      # The Kubernetes / Cluster API ecosystem moves in lockstep with the vendored
+      # CAPI version — a lone controller-runtime/k8s.io/cluster-api major-or-minor
+      # bump breaks the build (e.g. controller-runtime v0.24 needs a newer
+      # client-go). Bump these deliberately with the CAPI version, not per-dep.
+      # Patch updates and security updates still flow.
+      - dependency-name: "sigs.k8s.io/controller-runtime"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "sigs.k8s.io/cluster-api"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: "k8s.io/*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   # Keep GitHub Actions pinned versions current.
   - package-ecosystem: github-actions
     directory: "/"
