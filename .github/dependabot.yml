@@ -1,0 +1,17 @@
+version: 2
+updates:
+  # Go modules — grouped into a single weekly PR to keep noise low. Security
+  # updates are still raised individually and promptly by Dependabot.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      go-dependencies:
+        patterns: ["*"]
+  # Keep GitHub Actions pinned versions current.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
