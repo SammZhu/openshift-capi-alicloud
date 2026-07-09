@@ -1,6 +1,6 @@
 module github.com/SammZhu/openshift-capi-alicloud
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/aliyun/alibaba-cloud-sdk-go v1.63.107
