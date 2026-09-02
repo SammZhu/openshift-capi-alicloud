@@ -214,6 +214,13 @@ func NewCAPIClient(_ runtimeclient.Client, regionID string) (Client, error) {
 		MaxRetryTime: 3,
 	}
 
+	// Apsara Stack needs different endpoints, plain HTTP and per-request
+	// organisation/resource-group headers; see applyApsaraOverrides.  A no-op
+	// unless the environment asks for it.
+	if applyApsaraOverrides(sdkConfig, regionID) {
+		klog.V(2).Infof("alibaba: Apsara overrides active for region %s", regionID)
+	}
+
 	cred := resolveCredential()
 
 	ecsClient, err := ecs.NewClientWithOptions(regionID, sdkConfig, cred)
