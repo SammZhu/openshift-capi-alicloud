@@ -67,8 +67,15 @@ type Tag struct {
 
 // SystemDisk describes the system disk configuration for an ECS instance.
 type SystemDisk struct {
-	// Category is the disk category (e.g. cloud_efficiency, cloud_ssd, cloud_essd).
-	// +kubebuilder:validation:Enum=cloud_efficiency;cloud_ssd;cloud_essd;cloud_auto
+	// Category is the disk category (e.g. cloud_efficiency, cloud_ssd, cloud_essd
+	// on the public cloud; cloud_pperf / cloud_sperf on Apsara Stack).
+	//
+	// Deliberately NOT an enum.  Which categories exist is a property of the
+	// cloud and even of the individual zone, so no list compiled into this API
+	// can be right everywhere: an enum of public-cloud values rejected the only
+	// category a private-cloud zone offered, with a generic "Unsupported value"
+	// from the API server.  The cloud validates this anyway, and does it better —
+	// "resource type [[cloud_essd]] not exists in <zone>" names the zone.
 	Category string `json:"category"`
 	// Size is the disk size in GiB.
 	// +kubebuilder:validation:Minimum=20
@@ -90,8 +97,8 @@ type SystemDisk struct {
 
 // DataDisk describes an additional data disk for an ECS instance.
 type DataDisk struct {
-	// Category is the disk category.
-	// +kubebuilder:validation:Enum=cloud_efficiency;cloud_ssd;cloud_essd;cloud_auto
+	// Category is the disk category.  Not an enum, for the same reason as
+	// SystemDisk.Category above: the valid set is cloud- and zone-specific.
 	Category string `json:"category"`
 	// Size is the disk size in GiB.
 	// +kubebuilder:validation:Minimum=20
