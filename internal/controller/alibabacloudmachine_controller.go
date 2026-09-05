@@ -693,11 +693,14 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 	}
 
 	resp, createErr := c.CreateECSInstance(alibabaClient.CreateInstanceParams{
-		RegionID:                   region,
-		ZoneID:                     alibabaCloudMachine.Spec.ZoneID,
-		InstanceType:               alibabaCloudMachine.Spec.InstanceType,
-		ImageID:                    imageID,
-		InstanceName:               machine.Name,
+		RegionID:     region,
+		ZoneID:       alibabaCloudMachine.Spec.ZoneID,
+		InstanceType: alibabaCloudMachine.Spec.InstanceType,
+		ImageID:      imageID,
+		InstanceName: machine.Name,
+		// Stable per AlibabaCloudMachine, so a retried or concurrent create
+		// returns the first instance rather than making a second one.
+		ClientToken:                string(alibabaCloudMachine.UID),
 		SecurityGroupIDs:           alibabaCloudMachine.Spec.SecurityGroupIDs,
 		VSwitchID:                  alibabaCloudMachine.Spec.VSwitchID,
 		SystemDiskCategory:         diskCategory,

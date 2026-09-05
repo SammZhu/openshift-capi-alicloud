@@ -72,6 +72,17 @@ type CreateInstanceParams struct {
 	// HttpPutResponseHopLimit caps the metadata token TTL hop count; 0 leaves the
 	// API default.
 	HttpPutResponseHopLimit int
+	// ClientToken makes RunInstances idempotent: the same token returns the
+	// instance the first call created instead of creating another.  Without it,
+	// two reconciles of one Machine that overlap each create an instance, and the
+	// second one's providerID write is then rejected as immutable — leaving
+	// spec.providerID and status.instanceID naming different instances, a Machine
+	// that reports Ready and can never bind its Node.  Observed 2026-09-05, 15ms
+	// between the two "Creating ECS instance" log lines.
+	//
+	// Must be ASCII and at most 64 characters; the controller passes the
+	// AlibabaCloudMachine UID, which is stable across retries of the same object.
+	ClientToken string
 }
 
 // CreateInstanceResponse is the normalised response from CreateECSInstance.
@@ -459,6 +470,10 @@ func (c *alibabacloudClient) CreateECSInstance(params CreateInstanceParams) (*Cr
 	req.UserData = params.UserData
 	req.ResourceGroupId = params.ResourceGroupID
 	req.Amount = "1"
+	// Idempotency.  See CreateInstanceParams.ClientToken.
+	if params.ClientToken != "" {
+		req.ClientToken = params.ClientToken
+	}
 
 	// System-disk encryption + KMS key are not typed fields on RunInstancesRequest
 	// in this SDK version (only SystemDisk.PerformanceLevel is). Inject them as raw
