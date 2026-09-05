@@ -483,6 +483,34 @@ func (r *AlibabaCloudMachineReconciler) findOrCreateInstance(
 
 	if alibabaCloudMachine.Status.InstanceID != nil {
 		instanceID := *alibabaCloudMachine.Status.InstanceID
+
+		// Two fields name the instance and only one of them binds the Node:
+		// this controller reconciles against Status.InstanceID, while CAPI matches
+		// Machine.spec.providerID to Node.spec.providerID.  The webhook makes
+		// providerID immutable, so if the two ever come to disagree — a create
+		// retried after a lost status write leaves providerID on the first
+		// instance and Status.InstanceID on the second — nothing reconciles them
+		// back together.
+		//
+		// The result is the worst kind of stuck: the instance in Status is real
+		// and Running, so this controller reports Ready, while the providerID
+		// points at an instance that no longer exists, so the Node is never
+		// claimed and the MachineDeployment never converges.  Observed 2026-09-05:
+		// readyReplicas stuck at 1 of 2 for an hour, with a healthy unclaimed
+		// worker sitting in the cluster and no error reported anywhere.
+		//
+		// Fail it instead.  A Machine whose providerID can never bind is not
+		// recoverable in place — CAPI has to replace it — and saying so is far
+		// better than reporting Ready forever.
+		if alibabaCloudMachine.Spec.ProviderID != nil {
+			if pidInstance := providerInstanceID(*alibabaCloudMachine.Spec.ProviderID); pidInstance != "" && pidInstance != instanceID {
+				return nil, newTerminalError("ProviderIDInstanceMismatch",
+					fmt.Sprintf("spec.providerID names instance %s but status.instanceID is %s; "+
+						"providerID is immutable, so this machine can never bind its Node",
+						pidInstance, instanceID))
+			}
+		}
+
 		info, err := r.describeInstance(ctx, alibabaSDKClient, instanceID)
 		if err != nil {
 			return nil, err
