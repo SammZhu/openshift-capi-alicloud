@@ -92,8 +92,14 @@ type CreateInstanceResponse struct {
 
 // InstanceDescription is the normalised view of an ECS instance returned by DescribeInstanceByID.
 type InstanceDescription struct {
-	InstanceID      string
-	Status          string
+	InstanceID string
+	Status     string
+	// HostName is the instance's OS hostname, which is also the name its kubelet
+	// registers the Node under.  The machine approver looks up a Machine by
+	// matching the node name against a MachineAddress of type InternalDNS, so the
+	// controller has to carry this through — without it that lookup cannot
+	// succeed and the approver falls back to slower, weaker checks.
+	HostName        string
 	InnerIpAddress  struct{ IpAddress []string }
 	PublicIpAddress struct{ IpAddress []string }
 }
@@ -307,6 +313,7 @@ func (c *alibabacloudClient) DescribeInstanceByID(instanceID string) (*InstanceD
 	desc := &InstanceDescription{
 		InstanceID: inst.InstanceId,
 		Status:     inst.Status,
+		HostName:   inst.HostName,
 	}
 	desc.InnerIpAddress.IpAddress = inst.InnerIpAddress.IpAddress
 	desc.PublicIpAddress.IpAddress = inst.PublicIpAddress.IpAddress

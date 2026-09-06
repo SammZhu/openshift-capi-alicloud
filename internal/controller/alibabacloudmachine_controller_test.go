@@ -1172,3 +1172,41 @@ func TestResolveFailureDomain_MultiAZ(t *testing.T) {
 		}
 	}
 }
+
+// The approver finds a Machine for a kubelet-serving CSR by matching the node
+// name against an InternalDNS address, so this is the field that decides whether
+// a worker's certificate is ever signed.  Assert it is present and carries the
+// hostname — and that an instance without one does not gain an empty address,
+// which would match nothing and look like a populated field.
+func TestSyncInstanceStatus_SetsInternalDNSFromHostName(t *testing.T) {
+	r := &AlibabaCloudMachineReconciler{}
+
+	m := &infrav1.AlibabaCloudMachine{}
+	r.syncInstanceStatus(m, &instanceInfo{
+		InstanceID: "i-123",
+		State:      infrav1.InstanceStateRunning,
+		HostName:   "izf8s00wbhnnq1noak2y6kz",
+		PrivateIP:  "192.168.1.10",
+	})
+	var dns []string
+	for _, a := range m.Status.Addresses {
+		if a.Type == clusterv1.MachineInternalDNS {
+			dns = append(dns, a.Address)
+		}
+	}
+	if len(dns) != 1 || dns[0] != "izf8s00wbhnnq1noak2y6kz" {
+		t.Fatalf("expected one InternalDNS address with the hostname, got %v (all: %+v)", dns, m.Status.Addresses)
+	}
+
+	m2 := &infrav1.AlibabaCloudMachine{}
+	r.syncInstanceStatus(m2, &instanceInfo{
+		InstanceID: "i-456",
+		State:      infrav1.InstanceStateRunning,
+		PrivateIP:  "192.168.1.11",
+	})
+	for _, a := range m2.Status.Addresses {
+		if a.Type == clusterv1.MachineInternalDNS {
+			t.Fatalf("no hostname was known, so no InternalDNS should be set; got %q", a.Address)
+		}
+	}
+}

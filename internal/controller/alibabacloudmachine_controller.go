@@ -605,6 +605,7 @@ func (r *AlibabaCloudMachineReconciler) maybeHardenMetadata(
 type instanceInfo struct {
 	InstanceID string
 	State      infrav1.InstanceState
+	HostName   string
 	PrivateIP  string
 	PublicIP   string
 }
@@ -620,6 +621,7 @@ func (r *AlibabaCloudMachineReconciler) describeInstance(ctx context.Context, c 
 	return &instanceInfo{
 		InstanceID: resp.InstanceID,
 		State:      infrav1.InstanceState(resp.Status),
+		HostName:   resp.HostName,
 		PrivateIP:  firstIP(resp.InnerIpAddress.IpAddress),
 		PublicIP:   firstIP(resp.PublicIpAddress.IpAddress),
 	}, nil
@@ -822,6 +824,18 @@ func (r *AlibabaCloudMachineReconciler) syncInstanceStatus(m *infrav1.AlibabaClo
 	m.Status.InstanceID = &info.InstanceID
 	m.Status.InstanceState = &info.State
 	addrs := []clusterv1.MachineAddress{}
+	// InternalDNS first, because it is the one the machine approver needs: it
+	// authorises a kubelet-serving CSR by finding a Machine whose InternalDNS
+	// address equals the node name, and the node name is this hostname.  Without
+	// it the approver logs "failed to find machine with InternalDNS matching
+	// <node>" and falls through to weaker checks — one of which reaches the
+	// kubelet over the network and times out.
+	if info.HostName != "" {
+		addrs = append(addrs, clusterv1.MachineAddress{
+			Type:    clusterv1.MachineInternalDNS,
+			Address: info.HostName,
+		})
+	}
 	if info.PrivateIP != "" {
 		addrs = append(addrs, clusterv1.MachineAddress{
 			Type:    clusterv1.MachineInternalIP,
