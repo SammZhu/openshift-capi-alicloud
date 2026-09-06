@@ -326,6 +326,34 @@ func TestFindOrCreate_SetsInstanceNameToMachineName(t *testing.T) {
 	}
 }
 
+// createInstance must also set HostName to the Machine name. HostName is the
+// OS hostname, which is the name kubelet registers the Node under — so without
+// it a worker Node is called iZ<id>Z no matter what the console shows. The
+// InternalDNS address published in syncInstanceStatus is read back from the
+// same hostname, which is what keeps machine-approver able to match the two.
+func TestFindOrCreate_SetsHostNameToMachineName(t *testing.T) {
+	var gotHostName string
+	fakeECS := &fakeclient.FakeClient{
+		CreateECSInstanceFn: func(p alibabaClient.CreateInstanceParams) (*alibabaClient.CreateInstanceResponse, error) {
+			gotHostName = p.HostName
+			return &alibabaClient.CreateInstanceResponse{InstanceID: "i-new"}, nil
+		},
+	}
+	r := &AlibabaCloudMachineReconciler{}
+	aliMachine := &infrav1.AlibabaCloudMachine{
+		Spec: infrav1.AlibabaCloudMachineSpec{InstanceType: "ecs.c6.large", ImageID: "m-test"},
+	}
+	aliCluster := &infrav1.AlibabaCloudCluster{Spec: infrav1.AlibabaCloudClusterSpec{Region: "cn-shanghai"}}
+	machine := &clusterv1.Machine{ObjectMeta: metav1.ObjectMeta{Name: "caworkers-c-abc12-xy34"}}
+
+	if _, err := r.findOrCreateInstance(context.Background(), fakeECS, machine, aliCluster, aliMachine); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotHostName != "caworkers-c-abc12-xy34" {
+		t.Errorf("HostName = %q, want caworkers-c-abc12-xy34 (the Machine name)", gotHostName)
+	}
+}
+
 // ── Reconcile — top-level paths ─────────────────────────────────────────────────
 
 func TestReconcile_MachineNotFound(t *testing.T) {
@@ -1169,6 +1197,44 @@ func TestResolveFailureDomain_MultiAZ(t *testing.T) {
 		}
 		if am.Spec.ZoneID != tc.zone || am.Spec.VSwitchID != tc.wantVsw {
 			t.Errorf("%s -> zone=%q vsw=%q, want zone=%q vsw=%q", tc.zone, am.Spec.ZoneID, am.Spec.VSwitchID, tc.zone, tc.wantVsw)
+		}
+	}
+}
+
+// The approver finds a Machine for a kubelet-serving CSR by matching the node
+// name against an InternalDNS address, so this is the field that decides whether
+// a worker's certificate is ever signed.  Assert it is present and carries the
+// hostname — and that an instance without one does not gain an empty address,
+// which would match nothing and look like a populated field.
+func TestSyncInstanceStatus_SetsInternalDNSFromHostName(t *testing.T) {
+	r := &AlibabaCloudMachineReconciler{}
+
+	m := &infrav1.AlibabaCloudMachine{}
+	r.syncInstanceStatus(m, &instanceInfo{
+		InstanceID: "i-123",
+		State:      infrav1.InstanceStateRunning,
+		HostName:   "izf8s00wbhnnq1noak2y6kz",
+		PrivateIP:  "192.168.1.10",
+	})
+	var dns []string
+	for _, a := range m.Status.Addresses {
+		if a.Type == clusterv1.MachineInternalDNS {
+			dns = append(dns, a.Address)
+		}
+	}
+	if len(dns) != 1 || dns[0] != "izf8s00wbhnnq1noak2y6kz" {
+		t.Fatalf("expected one InternalDNS address with the hostname, got %v (all: %+v)", dns, m.Status.Addresses)
+	}
+
+	m2 := &infrav1.AlibabaCloudMachine{}
+	r.syncInstanceStatus(m2, &instanceInfo{
+		InstanceID: "i-456",
+		State:      infrav1.InstanceStateRunning,
+		PrivateIP:  "192.168.1.11",
+	})
+	for _, a := range m2.Status.Addresses {
+		if a.Type == clusterv1.MachineInternalDNS {
+			t.Fatalf("no hostname was known, so no InternalDNS should be set; got %q", a.Address)
 		}
 	}
 }

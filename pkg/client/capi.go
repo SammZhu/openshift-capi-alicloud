@@ -44,7 +44,17 @@ type CreateInstanceParams struct {
 	// console). Empty leaves the Alibaba default, which is an opaque iZ<id>Z string
 	// that is impossible to attribute to a Machine. The controller sets it to the
 	// CAPI Machine name so a worker ECS reads e.g. "caworkers-c-xxxxx-yyyyy".
-	InstanceName               string
+	InstanceName string
+	// HostName sets the instance's OS hostname, which is what kubelet registers
+	// itself under — so this, not InstanceName, is what the Kubernetes Node is
+	// called. Empty leaves the Alibaba default (the same opaque iZ<id>Z), which
+	// is why an un-named worker Node reads nothing like its Machine. The
+	// controller sets it to the CAPI Machine name. Nodes are matched back to
+	// their Machine through the InternalDNS address published from the instance
+	// hostname, so the Node name and that address stay in step by construction.
+	// A name Alibaba would reject is dropped rather than failing the create; see
+	// hostNameOK.
+	HostName                   string
 	SecurityGroupIDs           []string
 	VSwitchID                  string
 	SystemDiskCategory         string
@@ -72,6 +82,17 @@ type CreateInstanceParams struct {
 	// HttpPutResponseHopLimit caps the metadata token TTL hop count; 0 leaves the
 	// API default.
 	HttpPutResponseHopLimit int
+	// ClientToken makes RunInstances idempotent: the same token returns the
+	// instance the first call created instead of creating another.  Without it,
+	// two reconciles of one Machine that overlap each create an instance, and the
+	// second one's providerID write is then rejected as immutable — leaving
+	// spec.providerID and status.instanceID naming different instances, a Machine
+	// that reports Ready and can never bind its Node.  Observed 2026-09-05, 15ms
+	// between the two "Creating ECS instance" log lines.
+	//
+	// Must be ASCII and at most 64 characters; the controller passes the
+	// AlibabaCloudMachine UID, which is stable across retries of the same object.
+	ClientToken string
 }
 
 // CreateInstanceResponse is the normalised response from CreateECSInstance.
@@ -81,8 +102,14 @@ type CreateInstanceResponse struct {
 
 // InstanceDescription is the normalised view of an ECS instance returned by DescribeInstanceByID.
 type InstanceDescription struct {
-	InstanceID      string
-	Status          string
+	InstanceID string
+	Status     string
+	// HostName is the instance's OS hostname, which is also the name its kubelet
+	// registers the Node under.  The machine approver looks up a Machine by
+	// matching the node name against a MachineAddress of type InternalDNS, so the
+	// controller has to carry this through — without it that lookup cannot
+	// succeed and the approver falls back to slower, weaker checks.
+	HostName        string
 	InnerIpAddress  struct{ IpAddress []string }
 	PublicIpAddress struct{ IpAddress []string }
 }
@@ -214,6 +241,13 @@ func NewCAPIClient(_ runtimeclient.Client, regionID string) (Client, error) {
 		MaxRetryTime: 3,
 	}
 
+	// Apsara Stack needs different endpoints, plain HTTP and per-request
+	// organisation/resource-group headers; see applyApsaraOverrides.  A no-op
+	// unless the environment asks for it.
+	if applyApsaraOverrides(sdkConfig, regionID) {
+		klog.V(2).Infof("alibaba: Apsara overrides active for region %s", regionID)
+	}
+
 	cred := resolveCredential()
 
 	ecsClient, err := ecs.NewClientWithOptions(regionID, sdkConfig, cred)
@@ -289,6 +323,7 @@ func (c *alibabacloudClient) DescribeInstanceByID(instanceID string) (*InstanceD
 	desc := &InstanceDescription{
 		InstanceID: inst.InstanceId,
 		Status:     inst.Status,
+		HostName:   inst.HostName,
 	}
 	desc.InnerIpAddress.IpAddress = inst.InnerIpAddress.IpAddress
 	desc.PublicIpAddress.IpAddress = inst.PublicIpAddress.IpAddress
@@ -414,6 +449,39 @@ func (c *alibabacloudClient) FindInstanceByTag(region, key, value string) (strin
 }
 
 // CreateECSInstance creates an ECS instance and returns its ID.
+// hostNameOK reports whether name is usable as a Linux ECS hostname: 2-64
+// characters of letters, digits, hyphens and dots, starting and ending
+// alphanumeric, with no doubled separator and at least one non-digit.
+// RunInstances rejects anything else, so the caller drops a failing name rather
+// than losing the instance to a validation error. CAPI Machine names satisfy
+// this in every ordinary case — the guard is for the long or oddly shaped ones.
+func hostNameOK(name string) bool {
+	if len(name) < 2 || len(name) > 64 {
+		return false
+	}
+	allDigits := true
+	for i := 0; i < len(name); i++ {
+		ch := name[i]
+		switch {
+		case ch >= '0' && ch <= '9':
+		case ch >= 'a' && ch <= 'z', ch >= 'A' && ch <= 'Z':
+			allDigits = false
+		case ch == '-' || ch == '.':
+			allDigits = false
+			// Separators may not lead, trail, or double up.
+			if i == 0 || i == len(name)-1 {
+				return false
+			}
+			if prev := name[i-1]; prev == '-' || prev == '.' {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return !allDigits
+}
+
 func (c *alibabacloudClient) CreateECSInstance(params CreateInstanceParams) (*CreateInstanceResponse, error) {
 	// Idempotency guard: if an instance already exists for this machine (tagged
 	// k8s.io/cluster-api-machine=<name>), adopt it instead of creating a
@@ -439,10 +507,16 @@ func (c *alibabacloudClient) CreateECSInstance(params CreateInstanceParams) (*Cr
 	req.InstanceType = params.InstanceType
 	req.ImageId = params.ImageID
 	if params.InstanceName != "" {
-		// Console display name only. Deliberately NOT setting HostName: that would
-		// change the node's OS hostname (and thus the Kubernetes Node name + CSRs),
-		// a larger blast radius than the console-identification this addresses.
 		req.InstanceName = params.InstanceName
+	}
+	if params.HostName != "" {
+		if hostNameOK(params.HostName) {
+			req.HostName = params.HostName
+		} else {
+			// Dropping the hostname costs readability; a rejected RunInstances
+			// would cost the whole scale-up, so degrade instead of failing.
+			klog.Warningf("not usable as an ECS hostname, leaving the Alibaba default: %q", params.HostName)
+		}
 	}
 	req.VSwitchId = params.VSwitchID
 	req.SystemDiskCategory = params.SystemDiskCategory
@@ -452,6 +526,10 @@ func (c *alibabacloudClient) CreateECSInstance(params CreateInstanceParams) (*Cr
 	req.UserData = params.UserData
 	req.ResourceGroupId = params.ResourceGroupID
 	req.Amount = "1"
+	// Idempotency.  See CreateInstanceParams.ClientToken.
+	if params.ClientToken != "" {
+		req.ClientToken = params.ClientToken
+	}
 
 	// System-disk encryption + KMS key are not typed fields on RunInstancesRequest
 	// in this SDK version (only SystemDisk.PerformanceLevel is). Inject them as raw
