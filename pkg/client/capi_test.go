@@ -1,6 +1,9 @@
 package client
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestMachineTag(t *testing.T) {
 	tags := []Tag{
@@ -26,5 +29,39 @@ func TestToTagResourcesTags(t *testing.T) {
 	}
 	if got := toTagResourcesTags(nil); len(got) != 0 {
 		t.Errorf("toTagResourcesTags(nil) len = %d, want 0", len(got))
+	}
+}
+
+// hostNameOK gates whether a Machine name reaches RunInstances as the instance
+// hostname. A name it wrongly rejects costs a readable Node name; one it wrongly
+// accepts fails the create and the scale-up with it, so the rejections matter
+// more than the acceptances.
+func TestHostNameOK(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"machine name", "caworkers-c-abc12-xy34", true},
+		{"dotted", "worker-0.cluster", true},
+		{"shortest allowed", "w1", true},
+		{"single character", "w", false},
+		{"empty", "", false},
+		{"65 characters", strings.Repeat("a", 65), false},
+		{"64 characters", strings.Repeat("a", 64), true},
+		{"leading hyphen", "-worker", false},
+		{"trailing hyphen", "worker-", false},
+		{"trailing dot", "worker.", false},
+		{"doubled hyphen", "caworkers--abc12", false},
+		{"doubled dot", "worker..cluster", false},
+		{"hyphen then dot", "worker-.cluster", false},
+		{"underscore", "worker_0", false},
+		{"all digits", "12345", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := hostNameOK(tc.in); got != tc.want {
+				t.Errorf("hostNameOK(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
 	}
 }

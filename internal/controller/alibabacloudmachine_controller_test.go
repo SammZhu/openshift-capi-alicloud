@@ -326,6 +326,34 @@ func TestFindOrCreate_SetsInstanceNameToMachineName(t *testing.T) {
 	}
 }
 
+// createInstance must also set HostName to the Machine name. HostName is the
+// OS hostname, which is the name kubelet registers the Node under — so without
+// it a worker Node is called iZ<id>Z no matter what the console shows. The
+// InternalDNS address published in syncInstanceStatus is read back from the
+// same hostname, which is what keeps machine-approver able to match the two.
+func TestFindOrCreate_SetsHostNameToMachineName(t *testing.T) {
+	var gotHostName string
+	fakeECS := &fakeclient.FakeClient{
+		CreateECSInstanceFn: func(p alibabaClient.CreateInstanceParams) (*alibabaClient.CreateInstanceResponse, error) {
+			gotHostName = p.HostName
+			return &alibabaClient.CreateInstanceResponse{InstanceID: "i-new"}, nil
+		},
+	}
+	r := &AlibabaCloudMachineReconciler{}
+	aliMachine := &infrav1.AlibabaCloudMachine{
+		Spec: infrav1.AlibabaCloudMachineSpec{InstanceType: "ecs.c6.large", ImageID: "m-test"},
+	}
+	aliCluster := &infrav1.AlibabaCloudCluster{Spec: infrav1.AlibabaCloudClusterSpec{Region: "cn-shanghai"}}
+	machine := &clusterv1.Machine{ObjectMeta: metav1.ObjectMeta{Name: "caworkers-c-abc12-xy34"}}
+
+	if _, err := r.findOrCreateInstance(context.Background(), fakeECS, machine, aliCluster, aliMachine); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotHostName != "caworkers-c-abc12-xy34" {
+		t.Errorf("HostName = %q, want caworkers-c-abc12-xy34 (the Machine name)", gotHostName)
+	}
+}
+
 // ── Reconcile — top-level paths ─────────────────────────────────────────────────
 
 func TestReconcile_MachineNotFound(t *testing.T) {

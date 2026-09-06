@@ -700,6 +700,9 @@ func (r *AlibabaCloudMachineReconciler) createInstance(
 		InstanceType: alibabaCloudMachine.Spec.InstanceType,
 		ImageID:      imageID,
 		InstanceName: machine.Name,
+		// The OS hostname, and so the Kubernetes Node name. Matches InstanceName
+		// so console, Machine and Node all read the same.
+		HostName: machine.Name,
 		// Stable per AlibabaCloudMachine, so a retried or concurrent create
 		// returns the first instance rather than making a second one.
 		ClientToken:                string(alibabaCloudMachine.UID),
