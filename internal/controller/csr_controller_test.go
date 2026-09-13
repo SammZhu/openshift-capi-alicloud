@@ -19,7 +19,9 @@ package controller
 import (
 	"context"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"net"
+	"strings"
 	"testing"
 
 	certv1 "k8s.io/api/certificates/v1"
@@ -154,4 +156,105 @@ func TestHasPendingMachine(t *testing.T) {
 	if pending2 {
 		t.Error("expected not pending: the machine's node has joined")
 	}
+}
+
+// A kubelet renews its serving certificate periodically, and the renewal only
+// takes effect once the CSR is approved. These cases pin down who may renew:
+// membership and SAN containment decide it, not whether this provider created
+// the node — the rule that used to leave ABI-installed nodes without any
+// approver at all.
+func TestShouldApproveServingCSR(t *testing.T) {
+	s := csrScheme(t)
+	capaMachine := infrav1.AlibabaCloudMachine{
+		ObjectMeta: metav1.ObjectMeta{Name: "w1", Namespace: "default"},
+		Spec:       infrav1.AlibabaCloudMachineSpec{ProviderID: ptr("alicloud://cn-x/i-capa")},
+		Status:     infrav1.AlibabaCloudMachineStatus{InstanceID: ptr("i-capa")},
+	}
+
+	cases := []struct {
+		name       string
+		node       *corev1.Node
+		csrUser    string
+		csrNode    string
+		sanIPs     []net.IP
+		sanDNS     []string
+		wantOK     bool
+		wantReason string
+	}{
+		{
+			name:       "ABI node with no CAPA machine may renew",
+			node:       node("cluster1-master-2", "", corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "10.0.32.6"}),
+			csrUser:    "system:node:cluster1-master-2",
+			csrNode:    "cluster1-master-2",
+			sanIPs:     []net.IP{net.ParseIP("10.0.32.6")},
+			wantOK:     true,
+			wantReason: "no AlibabaCloudMachine",
+		},
+		{
+			name:       "CAPA-backed node still approved, and still says so",
+			node:       node("capa-w1", "alicloud://cn-x.i-capa", corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "10.0.62.84"}),
+			csrUser:    "system:node:capa-w1",
+			csrNode:    "capa-w1",
+			sanIPs:     []net.IP{net.ParseIP("10.0.62.84")},
+			wantOK:     true,
+			wantReason: "CAPA-backed",
+		},
+		{
+			name:    "a SAN the node does not own is refused",
+			node:    node("cluster1-master-2", "", corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "10.0.32.6"}),
+			csrUser: "system:node:cluster1-master-2",
+			csrNode: "cluster1-master-2",
+			sanIPs:  []net.IP{net.ParseIP("10.0.32.6"), net.ParseIP("10.0.16.5")},
+			wantOK:  false,
+		},
+		{
+			name:    "one node may not request a certificate for another",
+			node:    node("cluster1-master-2", "", corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "10.0.32.6"}),
+			csrUser: "system:node:cluster1-worker-1",
+			csrNode: "cluster1-master-2",
+			sanIPs:  []net.IP{net.ParseIP("10.0.32.6")},
+			wantOK:  false,
+		},
+		{
+			name:    "a node that is not a member is refused",
+			node:    node("some-other-node", "", corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "10.0.32.6"}),
+			csrUser: "system:node:not-a-member",
+			csrNode: "not-a-member",
+			sanIPs:  []net.IP{net.ParseIP("10.0.32.6")},
+			wantOK:  false,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cl := fake.NewClientBuilder().WithScheme(s).
+				WithObjects(c.node).WithLists(&infrav1.AlibabaCloudMachineList{Items: []infrav1.AlibabaCloudMachine{capaMachine}}).Build()
+			r := &CertificateSigningRequestReconciler{Client: cl}
+			csr := &certv1.CertificateSigningRequest{
+				Spec: certv1.CertificateSigningRequestSpec{
+					SignerName: certv1.KubeletServingSignerName,
+					Username:   c.csrUser,
+				},
+			}
+			x509cr := &x509.CertificateRequest{
+				Subject:     pkixName("system:node:"+c.csrNode, "system:nodes"),
+				IPAddresses: c.sanIPs,
+				DNSNames:    c.sanDNS,
+			}
+			ok, reason, err := r.shouldApprove(context.Background(), csr, x509cr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ok != c.wantOK {
+				t.Fatalf("approve = %v (%s), want %v", ok, reason, c.wantOK)
+			}
+			if c.wantOK && !strings.Contains(reason, c.wantReason) {
+				t.Fatalf("reason = %q, want it to mention %q", reason, c.wantReason)
+			}
+		})
+	}
+}
+
+func pkixName(cn, org string) pkix.Name {
+	return pkix.Name{CommonName: cn, Organization: []string{org}}
 }
