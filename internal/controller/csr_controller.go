@@ -149,9 +149,24 @@ func (r *CertificateSigningRequestReconciler) shouldApprove(
 		return true, fmt.Sprintf("bootstrap CSR for %q; a provisioned AlibabaCloudMachine is awaiting its node", nodeName), nil
 
 	case certv1.KubeletServingSignerName:
-		// Serving CSR. Must come from the node's own kubelet, the node must
-		// already exist and be backed by a CAPA machine (providerID match), and
-		// every SAN must be one of that node's known addresses.
+		// Serving CSR. Three properties carry the decision: the request comes
+		// from that node's own kubelet, the node is already a member of this
+		// cluster, and every SAN is one of the addresses that node already
+		// advertises. Together they say "this node is renewing a certificate
+		// for the identity and addresses it already has".
+		//
+		// Being backed by an AlibabaCloudMachine is NOT one of them. It answers
+		// "did we create this node", which is a provenance question, not a
+		// safety one — and requiring it left every node this provider did not
+		// create without a renewal path. On an ABI-installed cluster that is
+		// the control plane and the install-time workers: OpenShift's
+		// machine-approver covers only machine-api nodes, this controller
+		// covered only CAPA nodes, and nobody covered the rest. Observed on
+		// ste2 on 2026-09-13: 57 pending serving CSRs, three nodes whose
+		// kubelets had stopped serving exec and logs entirely, and three CSI
+		// checks reporting FAIL against volumes that were perfectly healthy.
+		//
+		// The provenance is still worth recording, so it goes in the reason.
 		if csr.Spec.Username != nodeUserPrefix+nodeName {
 			return false, "", nil
 		}
@@ -159,13 +174,14 @@ func (r *CertificateSigningRequestReconciler) shouldApprove(
 		if err := r.Get(ctx, client.ObjectKey{Name: nodeName}, node); err != nil {
 			return false, "", client.IgnoreNotFound(err)
 		}
-		if !nodeBackedByCAPAMachine(node, machines.Items) {
-			return false, "", nil
-		}
 		if !sansSubsetOfNode(x509cr, node) {
 			return false, "", nil
 		}
-		return true, fmt.Sprintf("serving CSR SANs all match node %q addresses (CAPA-backed)", nodeName), nil
+		provenance := "no AlibabaCloudMachine — e.g. an ABI-installed node"
+		if nodeBackedByCAPAMachine(node, machines.Items) {
+			provenance = "CAPA-backed"
+		}
+		return true, fmt.Sprintf("serving CSR SANs all match node %q addresses (%s)", nodeName, provenance), nil
 	}
 	return false, "", nil
 }
